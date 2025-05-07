@@ -1,28 +1,22 @@
 # tlsfun
-A partial implementation of TLS 1.3 in pure python for experimentation
+A partial implementation of TLS 1.3 in pure python for experimentation and fun times
 
 ## Dependencies
 
 *   Python 3.11 or later
-*   [cryptography (pip)](https://pypi.org/project/cryptography/)
+*   [pyca cryptography (pip)](https://pypi.org/project/cryptography/)
 
 ## Quickstart
 
 1.  Create virtual env in subdirectory `venv`
 
-    (only once)
-
         python3 -m venv --prompt tlsfun venv
 
 2.  Activate virtual env in the current shell
 
-    (every time you open a new shell)
-
         . venv/bin/activate
 
 3.  Install dependencies in the venv
-
-    (once)
 
         python3 -m pip install cryptography
 
@@ -36,9 +30,11 @@ A partial implementation of TLS 1.3 in pure python for experimentation
 The `https.py` program can be used to make GET request, optionally using
 reconnect tickets.
 
-For usage, run
+For example:
 
-    ./https.py --help
+    ./https.py roche.work
+
+Use `--help` for usage details.
 
 ## Python module layout
 
