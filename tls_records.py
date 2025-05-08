@@ -15,10 +15,10 @@ from tls13_spec import (
 from tls_crypto import StreamCipher
 
 class RecordReader:
-    file = SetOnce()
     hs_buffer = SetOnce()
 
-    def __init__(self, transcript, app_data_buffer):
+    def __init__(self, file, transcript, app_data_buffer):
+        self._file = file
         self._transcript = transcript
         self._app_data_buffer = app_data_buffer
         self._unwrapper = None
@@ -32,7 +32,7 @@ class RecordReader:
     def get_next_record(self):
         logger.info('trying to fetch a record from the incoming stream')
         try:
-            record = Record.unpack_from(self.file)
+            record = Record.unpack_from(self._file)
         except (UnpackError, EOFError) as e:
             raise TlsError("error reading or unpacking record from server") from e
 
@@ -83,9 +83,8 @@ class RecordReader:
 
 
 class RecordWriter:
-    file = SetOnce()
-
-    def __init__(self, transcript):
+    def __init__(self, file, transcript):
+        self._file = file
         self._transcript = transcript
         self._wrapper = None
         self._key_count = -1
@@ -126,7 +125,7 @@ class RecordWriter:
             raw         = raw,
         )
 
-        force_write(self.file, raw)
+        force_write(self._file, raw)
         logger.info(f'sent a size-{len(payload)} payload {"" if wrapped else "un"}wrapped in a size-{len(raw)} record')
 
 
@@ -146,6 +145,22 @@ class DataBuffer:
         return chunk
 
 
+class HandshakeBuffer(DataBuffer):
+    def __init__(self, owner):
+        super().__init__()
+        self._owner = owner # e.g. ClientHandshake, will receive hs payloads
+
+    def add(self, payload):
+        super().add(payload)
+
+        # try to break off any complete handshake messages
+        while len(self._buf) >= 4:
+            size = 4 + int.from_bytes(self._buf[1:4])
+            if len(self._buf) < size:
+                break
+            self._owner.process_hs_payload(self.get(size))
+
+
 RecordEntry = namedtuple(
         'RecordEntry',
         'typ payload from_client key_count padding raw')
@@ -156,3 +171,51 @@ class RecordTranscript:
 
     def add(self, **kwargs):
         self.records.append(RecordEntry(**kwargs))
+
+
+class Connection:
+    def __init__(self, secrets, handshake):
+        self._transcript = RecordTranscript(secrets)
+        self._app_data_in = DataBuffer()
+        self._handshake = handshake
+
+    @property
+    def transcript(self):
+        return self._transcript
+
+    def connect_socket(self, sock):
+        self.connect_files(
+            sock.makefile('rb'),
+            sock.makefile('wb'),
+        )
+
+    def connect_files(self, instream, outstream):
+        if self._handshake.started:
+            raise ValueError("already started! can't connect again")
+
+        self._rreader = RecordReader(instream, self._transcript, self._app_data_in)
+        self._rwriter = RecordWriter(outstream, self._transcript)
+
+        self._handshake.begin(self._rreader, self._rwriter)
+
+        while not self._handshake.connected:
+            self._rreader.fetch()
+
+    def send(self, appdata):
+        if not self._handshake.can_send:
+            raise ValueError("can't send application data yet")
+        buf = bytearray(appdata)
+        maxp = self._rwriter.max_payload
+        while buf:
+            chunk = buf[:maxp]
+            self._rwriter.send(typ=ContentType.APPLICATION_DATA,
+                               payload=bytes(buf[:maxp]))
+            del buf[:maxp]
+        return len(appdata)
+
+    def recv(self, maxsize):
+        if not self._handshake.can_recv:
+            raise ValueError("can't receive application data yet")
+        while not self._app_data_in:
+            self._rreader.fetch()
+        return self._app_data_in.get(maxsize)

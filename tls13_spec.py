@@ -38,7 +38,7 @@ class _FixedEnum(FixedSize, EnumType):
             raise ParseError(f'could not convert {value} to {self}') from e
 
 
-class HandshakeState(IntEnum, metaclass=_FixedEnum, bytelen=1):
+class ClientState(IntEnum, metaclass=_FixedEnum, bytelen=1):
     # rfc8446#appendix-A.1
     START         = 0
     WAIT_SH       = 1
@@ -50,6 +50,19 @@ class HandshakeState(IntEnum, metaclass=_FixedEnum, bytelen=1):
     CONNECTED     = 7
     CLOSED        = 8
     ERROR         = 9
+
+
+class ServerState(IntEnum, metaclass=_FixedEnum, bytelen=1):
+    # rfc8446#appendix-A.2
+    START         = 0
+    RECVD_CH      = 1
+    NEGOTIATED    = 2
+    WAIT_EOED     = 3
+    WAIT_FLIGHT2  = 4
+    WAIT_CERT     = 5
+    WAIT_CV       = 6
+    WAIT_FINISHED = 7
+    CONNECTED     = 8
 
 
 class ContentType(IntEnum, metaclass=_FixedEnum, bytelen=1):

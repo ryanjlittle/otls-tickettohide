@@ -8,7 +8,7 @@ from spec import kwdict
 from tls_common import *
 from tls13_spec import (
     Handshake,
-    HandshakeState,
+    ClientState,
     HandshakeType,
     Record,
     ContentType,
@@ -26,7 +26,14 @@ from tls_crypto import (
     DEFAULT_SIGNATURE_SCHEMES,
     DEFAULT_CIPHER_SUITES,
 )
-from tls_records import RecordTranscript, DataBuffer, RecordReader, RecordWriter
+from tls_records import (
+    RecordTranscript,
+    DataBuffer,
+    RecordReader,
+    RecordWriter,
+    HandshakeBuffer,
+    Connection,
+)
 from tls_keycalc import KeyCalc, HandshakeTranscript
 
 
@@ -34,82 +41,25 @@ ClientSecrets = namedtuple(
         'ClientSecrets', 'psk kex_sks', defaults=[None, ()])
 
 
-class Client:
+class Client(Connection):
     @classmethod
     def build(cls, *args, **kwargs):
         return cls(*build_client_hello(*args, **kwargs))
 
     def __init__(self, client_hello, client_secrets):
-        self._transcript = RecordTranscript(client_secrets)
-        self._app_data_in = DataBuffer()
-        self._rreader = RecordReader(self._transcript, self._app_data_in)
-        self._rwriter = RecordWriter(self._transcript)
-
-        if isinstance(client_hello, bytes):
-            client_hello = Handshake.unpack(Record.unpack(client_hello).payload)
-
-        self._handshake = _ClientHandshake(
-            client_hello,
-            client_secrets,
-            self._rreader,
-            self._rwriter,
-        )
-
-    @property
-    def transcript(self):
-        return self._transcript
+        super().__init__(client_secrets, _ClientHandshake(client_hello, client_secrets))
 
     @property
     def tickets(self):
         return tuple(self._handshake.tickets)
 
-    def connect_socket(self, sock):
-        self.connect_files(
-            sock.makefile('wb'),
-            sock.makefile('rb'),
-        )
-
-    def connect_files(self, outstream, instream):
-        if self._handshake.state != HandshakeState.START:
-            raise ValueError("can only connect from the initial START state")
-
-        self._rwriter.file = outstream
-        self._rreader.file = instream
-
-        self._handshake.send_hello()
-
-        while self._handshake.state != HandshakeState.CONNECTED:
-            self._rreader.fetch()
-
-    def send(self, appdata):
-        if self._handshake.state != HandshakeState.CONNECTED:
-            raise ValueError("must be connected to send application data")
-        buf = bytearray(appdata)
-        maxp = self._rwriter.max_payload
-        while buf:
-            chunk = buf[:maxp]
-            self._rwriter.send(typ=ContentType.APPLICATION_DATA,
-                               payload=bytes(buf[:maxp]))
-            del buf[:maxp]
-        return len(appdata)
-
-    def recv(self, maxsize):
-        if self._handshake.state != HandshakeState.CONNECTED:
-            raise ValueError("must be connected to receive application data")
-        while not self._app_data_in:
-            self._rreader.fetch()
-        return self._app_data_in.get(maxsize)
-
 
 class _ClientHandshake:
-    def __init__(self, client_hello, client_secrets, rreader, rwriter):
-        self._state = HandshakeState.START
+    def __init__(self, client_hello, client_secrets):
+        if isinstance(client_hello, bytes):
+            client_hello = Handshake.unpack(Record.unpack(client_hello).payload)
 
-        self._rreader = rreader
-        self._rreader.hs_buffer = _HandshakeBuffer(self)
-
-        self._rwriter = rwriter
-
+        self._state = ClientState.START
         self._psk = client_secrets.psk
 
         # extract some data from the client hello
@@ -139,18 +89,34 @@ class _ClientHandshake:
         assert not need_kex_mode and not need_psk, "needed psk and psk exchange mode extensions in client hello but didn't get them"
 
         self._chello_payload = Handshake.pack(client_hello)
-
         self._hs_trans = HandshakeTranscript()
         self._key_calc = KeyCalc(self._hs_trans)
-
         self.tickets = []
 
     @property
-    def state(self):
-        return self._state
+    def started(self):
+        return self._state != ClientState.START
 
-    def _send_hs_msg(self, typ, vers=Version.TLS_1_2, raw=None):
-        assert raw is not None
+    @property
+    def connected(self):
+        return self._state == ClientState.CONNECTED
+
+    @property
+    def can_send(self):
+        return self._state == ClientState.CONNECTED
+
+    @property
+    def can_recv(self):
+        return self._state == ClientState.CONNECTED
+
+    def begin(self, rreader, rwriter):
+        assert self._state == ClientState.START
+        self._rreader = rreader
+        self._rreader.hs_buffer = HandshakeBuffer(self)
+        self._rwriter = rwriter
+        self.send_hello()
+
+    def _send_hs_msg(self, typ, vers=Version.TLS_1_2, raw):
         logger.info(f"sending hs message {typ} to server")
         self._rwriter.send(
             typ     = ContentType.HANDSHAKE,
@@ -164,13 +130,13 @@ class _ClientHandshake:
         )
 
     def send_hello(self):
-        assert self._state == HandshakeState.START
+        assert self._state == ClientState.START
         self._send_hs_msg(
             typ  = HandshakeType.CLIENT_HELLO,
             vers = Version.TLS_1_0,
             raw  = self._chello_payload,
         )
-        self._state = HandshakeState.WAIT_SH
+        self._state = ClientState.WAIT_SH
 
     def process_hs_payload(self, raw):
         try:
@@ -181,21 +147,21 @@ class _ClientHandshake:
         logger.info(f"Received handshake message {typ} with length {len(raw)}")
 
         match (self._state, typ):
-            case (HandshakeState.WAIT_SH, HandshakeType.SERVER_HELLO):
+            case (ClientState.WAIT_SH, HandshakeType.SERVER_HELLO):
                 self._process_server_hello(body)
-            case (HandshakeState.WAIT_EE, HandshakeType.ENCRYPTED_EXTENSIONS):
+            case (ClientState.WAIT_EE, HandshakeType.ENCRYPTED_EXTENSIONS):
                 self._process_ee(body)
-            case ((HandshakeState.WAIT_CERT_CR | HandshakeState.WAIT_CERT), HandshakeType.CERTIFICATE):
+            case ((ClientState.WAIT_CERT_CR | ClientState.WAIT_CERT), HandshakeType.CERTIFICATE):
                 self._process_cert(body)
-            case (HandshakeState.WAIT_CERT_CR, HandshakeType.CERTIFICATE_REQUEST):
+            case (ClientState.WAIT_CERT_CR, HandshakeType.CERTIFICATE_REQUEST):
                 raise TlsTODO("Not yet implemented handling cert request from server")
-            case (HandshakeState.WAIT_CV, HandshakeType.CERTIFICATE_VERIFY):
+            case (ClientState.WAIT_CV, HandshakeType.CERTIFICATE_VERIFY):
                 self._process_cv(body)
-            case (HandshakeState.WAIT_FINISHED, HandshakeType.FINISHED):
+            case (ClientState.WAIT_FINISHED, HandshakeType.FINISHED):
                 self._process_finished(body)
-            case (HandshakeState.CONNECTED, HandshakeType.NEW_SESSION_TICKET):
+            case (ClientState.CONNECTED, HandshakeType.NEW_SESSION_TICKET):
                 self._process_ticket(body)
-            case (HandshakeState.CONNECTED, HandshakeType.KEY_UPDATE):
+            case (ClientState.CONNECTED, HandshakeType.KEY_UPDATE):
                 raise TlsTODO("Not yet implemented handling key update request")
             case _:
                 raise TlsError(f"Unexpected {typ} in state {self._state}")
@@ -255,7 +221,7 @@ class _ClientHandshake:
         self._rreader.rekey(self._cipher, self._hash_alg, self._key_calc.server_handshake_traffic_secret)
 
         logger.info(f"Finished processing server hello")
-        self._state = HandshakeState.WAIT_EE
+        self._state = ClientState.WAIT_EE
 
     def _process_ee(self, body):
         for ext in body:
@@ -271,9 +237,9 @@ class _ClientHandshake:
 
         logger.info(f"Finished processing server encrypted extensions")
         if self._psk is None:
-            self._state = HandshakeState.WAIT_CERT_CR
+            self._state = ClientState.WAIT_CERT_CR
         else:
-            self._state = HandshakeState.WAIT_FINISHED
+            self._state = ClientState.WAIT_FINISHED
 
     def _process_cert(self, body):
         if body.certificate_request_context:
@@ -287,7 +253,7 @@ class _ClientHandshake:
             f" with lengths {[len(x) for x in self._cert_chain]}")
         self._cert_pubkey = extract_x509_pubkey(self._cert_chain[0])
 
-        self._state = HandshakeState.WAIT_CV
+        self._state = ClientState.WAIT_CV
 
     def _process_cv(self, body):
         logger.info(f"Received a length-{len(body.signature)} sig of type {body.algorithm}")
@@ -306,7 +272,7 @@ class _ClientHandshake:
         else:
             raise TlsError("signature check failed in CERTIFICATE_VERIFY")
 
-        self._state = HandshakeState.WAIT_FINISHED
+        self._state = ClientState.WAIT_FINISHED
 
     def _process_finished(self, body):
         if body != self._key_calc.server_finished_verify:
@@ -334,27 +300,11 @@ class _ClientHandshake:
         self._rwriter.rekey(self._cipher, self._hash_alg,
                             self._key_calc.client_application_traffic_secret)
 
-        self._state = HandshakeState.CONNECTED
+        self._state = ClientState.CONNECTED
 
     def _process_ticket(self, body):
         self.tickets.append(self._key_calc.ticket_info(body, modes=self._psk_modes))
         logger.info("got and stored a reconnect ticket")
-
-
-class _HandshakeBuffer(DataBuffer):
-    def __init__(self, clhs):
-        super().__init__()
-        self._clhs = clhs # the ClientHandshake owner
-
-    def add(self, payload):
-        super().add(payload)
-
-        # try to break off handshake messages
-        while len(self._buf) >= 4:
-            size = 4 + int.from_bytes(self._buf[1:4])
-            if len(self._buf) < size:
-                break
-            self._clhs.process_hs_payload(self.get(size))
 
 
 def build_client_hello(

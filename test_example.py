@@ -65,7 +65,7 @@ class Example:
         self.start()
         if not self._connected:
             logger.info("connecting client (receive server replies)")
-            self.client.connect_files(self.from_client, self.from_server)
+            self.client.connect_files(self.from_server, self.from_client)
             self._connected = True
 
     def send(self):
