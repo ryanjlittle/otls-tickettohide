@@ -1,6 +1,11 @@
 # tlsfun
 A partial implementation of TLS 1.3 in pure python for experimentation and fun times
 
+## Disclaimer
+
+**This library is bad, insecure code written by an academic and
+should not be used by anyone.**
+
 ## Dependencies
 
 *   Python 3.11 or later
@@ -32,7 +37,7 @@ reconnect tickets.
 
 For example:
 
-    ./https.py roche.work
+    ./https.py github.com
 
 Use `--help` for usage details.
 
