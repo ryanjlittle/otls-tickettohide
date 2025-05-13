@@ -30,27 +30,45 @@ should not be used by anyone.**
         git clone https://github.com/syncsynchalt/illustrated-tls13
         ./test_example.py
 
-## Simple HTTPS GET requests using the library
+## Simple HTTPS client and server
 
-The `https.py` program can be used to make GET request, optionally using
+The `https_client.py` program can be used to make GET request, optionally using
 reconnect tickets.
 
 For example:
 
-    ./https.py github.com
+    ./https_client.py github.com
 
-Use `--help` for usage details.
+Unsurprisingly, the `https_server.py` runs a simple server over TLS
+that responds to GET requests with a transcript of the TLS connection.
+Try running it with
+
+    ./https_server.py -p 8000
+
+and then visiting `https://localhost:8000/` in your browser.
+(Note, you will probably need to click through a warning because
+the certificate is self-signed.)
+
+Use `--help` for more usage details of both programs.
+
 
 ## Python module layout
 
 *   `test_example.py`: Check this implementation against the example in
     Michael Driscoll's [Illustrated TLS 1.3](https://tls13.xargs.org/)
 
-*   `https.py`: Runnable python module to create a client connection to
+*   `https_client.py`: Runnable python module to create a client connection to
     an HTTPS server running TLS 1.3, optionally saving/using tickets.
+
+*   `https_server.py`: Runnable python module to spawn a multi-threaded
+    TLS 1.3 server which issues/uses tickets and responds to simple HTTP
+    GET requests.
 
 *   `tls_client.py`: Contains `Client` class for creating TLS 1.3 client-side
     connections.
+
+*   `tls_server.py`: Contains `Server` class as well as a useful
+    `start_server` function.
 
 *   `tls13_spec.py`: Network message structures and constants translated
     from RFC 8446 into Python
