@@ -4,9 +4,13 @@ Includes code for pre-shared keys (i.e. tickets)."""
 
 import time
 import json
+import os
+
+from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+from cryptography.exceptions import InvalidTag
 
 from util import b64enc, b64dec
-from spec import kwdict
+from spec import kwdict, Struct, Integer, Bounded, Raw, pformat
 from tls_common import *
 from tls13_spec import (
     Handshake,
@@ -15,6 +19,7 @@ from tls13_spec import (
     PskBinders,
     CipherSuite,
     PskKeyExchangeMode,
+    Ticket,
 )
 from tls_crypto import (
     get_hash_alg,
@@ -112,59 +117,28 @@ class TicketInfo:
         new_chello = chello._asdict() | {'body': body}
 
         # insert actual binder and return the (new) client hello object
-        actual_binder = self.get_binder_key(Handshake.prepack(new_chello), 0)
+        actual_binder = self.get_binder_key(Handshake.prepack(new_chello))
         binder_list[0] = actual_binder
         logger.info(f'inserting psk with id {self._id[:12]}... and  binder {actual_binder} into client hello')
         return Handshake.prepack(new_chello)
 
-    def get_binder_key(self, chello, index, prefix=b''):
-        # chello should be unpacked
-        # binder keys in chello should be filled in but will be ignored
-        # prefix is (optionally) a transcript prefix, e.g. from a hello retry
-        hst = HandshakeTranscript()
-        kc = KeyCalc(hst)
-        kc.cipher_suite = self._csuite
-        hst.add(HandshakeType.SERVER_HELLO, False, prefix)
+    def get_binder_key(self, chello, prefix=b''):
+        """Computes the binder key for this ticket within the given (unpacked) client hello.
 
-        # find index of this ticket
-        exts = chello.body.extensions
-        if not exts or exts[-1].typ != ExtensionType.PRE_SHARED_KEY:
-            raise TlsError("expected PRE_SHARED_KEY extension to come last")
-        pske = exts[-1].data
-        if len(pske.identities) <= index or pske.identities[index].identity != self._id:
-            raise TlsError("did not find this ticket in the identities list")
-
-        raw_hello = Handshake.pack(chello)
-        pbinds = PskBinders.pack(pske.binders)
-        assert raw_hello.endswith(pbinds)
-        hst.add(HandshakeType.CLIENT_HELLO, True, raw_hello[:-len(pbinds)])
-
-        kc.psk = self._secret
-        binder = kc.get_verify_data(kc.binder_key, hst[-1])
-
-        if len(pske.binders) != len(pske.identities) or len(binder) != len(pske.binders[index]):
-            raise TlsError("binder key in clienthello has the wrong length")
-
-        return binder
-
-    def find(self, chello, prefix=b'', age_tolerance=5):
-        """Looks for this ticket in the given (unpacked) client hello.
-        Returns the matching index within the client hello PSK list, or None.
+        prefix is (optionally) a transcript prefix, e.g. from a hello retry.
         """
-        psk_ext = chello.body.extensions[-1]
-        assert psk_ext.typ == ExtensionType.PRE_SHARED_KEY
-        for (index, (ident, oage)) in enumerate(psk_ext.data.identities):
-            if ident == self._id:
-                logger.info(f'found matching ticket id {self._id.hex()[:16]}... at index {index}')
-                if self.get_binder_key(chello, index, prefix) != psk_ext.data.binders[index]:
-                    raise TlsError(f'ticket binder {psk_ext.data.binders[index]} does not match expected {self.get_binder_key(chello, index, prefix)}')
-                age = (oage - self._mask) / 1000
-                if abs(age - (time.time() - self._creation)) > age_tolerance:
-                    raise TlsError(f'ticket age {age} is too far off from expected {time.time() - self._creation}')
-                if age > self._lifetime:
-                    raise TlsError(f'ticket age {age} exceeds lifetime {self._lifetime}')
-                logger.info(f'ticket from {age} seconds ago has valid binder and age')
-                return index
+
+        # find the index
+        try:
+            psk_ext = next(filter(
+                (lambda ext: ext.typ == ExtensionType.PRE_SHARED_KEY),
+                chello.body.extensions))
+            index = next(i for i,ident in enumerate(psk_ext.data.identities)
+                         if ident.identity == self._id)
+        except StopIteration:
+            raise TlsError("this ticket id not found in given client hello") from None
+
+        return calc_binder_key(chello, index, self._secret, self._csuite, prefix)
 
 
 class HandshakeTranscript:
@@ -236,19 +210,23 @@ class KeyCalc:
     def __init__(self, hs_trans):
         super().__setattr__('_mem', {})
         self._hs_trans = hs_trans
+        self._ticket_counter = [0]
 
-    def ticket_info(self, ticket, *args, **kwargs):
+    def ticket_secret(self, ticket_nonce):
         # rfc8446#section-4.6.1
-        ticket_secret = hkdf_expand_label(
+        return hkdf_expand_label(
             hash_alg = self.hash_alg,
             secret   = self.resumption_master_secret,
             label    = b'resumption',
-            cont     = ticket.ticket_nonce,
+            cont     = ticket_nonce,
             length   = self.hash_alg.digest_size,
         )
+
+    def ticket_info(self, ticket, *args, **kwargs):
+        # rfc8446#section-4.6.1
         return TicketInfo(
             ticket_id = ticket.ticket,
-            secret    = ticket_secret,
+            secret    = self.ticket_secret(ticket.ticket_nonce),
             csuite    = self.cipher_suite,
             mask      = ticket.ticket_age_add,
             lifetime  = ticket.ticket_lifetime,
@@ -331,4 +309,147 @@ class KeyCalc:
         elif value is None:
             value = self.zero
         self._mem[name] = value
+
+
+_ServerTicketPlaintext = Struct(
+    cipher_suite = CipherSuite,
+    expiration = Integer(8),
+    psk = Bounded(2, Raw),
+)
+
+_ServerTicketCiphertext = Struct(
+    inner_ciphertext = Bounded(2, Raw),
+    iv = Bounded(1, Raw),
+)
+
+
+class ServerTicketer:
+    """Stores server-side data needed to issue and redeem resumption tickets.
+
+    This is implemented using a (fresh) symmetric encryption key.
+    Each ticket value is an encryption of the resumption secret and cipher suite.
+    """
+
+    _AEAD = ChaCha20Poly1305
+    _NONCE_LENGTH = 12
+    _GRACE = 60*10 # grace period (in seconds) for ticket age checks
+
+    def __init__(self):
+        self._cipher = self._AEAD(self._AEAD.generate_key())
+        logger.info("Generated a random key for symmetric encryption of tickets.")
+        self._used = set()
+
+    def _get_current_time(self, hint):
+        return time.time() if hint is None else hint
+
+    def gen_ticket(self, secret, nonce, lifetime, csuite, current_time=None):
+        """Generates a fresh Ticket struct to send to the client.
+
+        secret: ticket resumption PSK
+        nonce: ticket_nonce value (unique within session, used to compute secret)
+        lifetime: seconds until ticket expires
+        csuite: cipher suite used in this session
+        current_time: current time in seconds (None to use current system time)
+        """
+        current_time = self._get_current_time(current_time)
+        expiration = current_time + lifetime
+
+        ptext = _ServerTicketPlaintext.pack(
+            cipher_suite = csuite,
+            expiration = round(expiration),
+            psk = secret,
+        )
+
+        iv = os.urandom(self._NONCE_LENGTH)
+        inner_ctext = self._cipher.encrypt(iv, ptext, iv)
+
+        ctext = _ServerTicketCiphertext.pack(
+            inner_ciphertext = inner_ctext,
+            iv = iv,
+        )
+
+        return Ticket.prepack(
+            ticket_lifetime = lifetime,
+            ticket_age_add = int.from_bytes(os.urandom(4)),
+            ticket_nonce = nonce,
+            ticket = ctext,
+            extensions = [],
+        )
+
+    def use_ticket(self, psk_identity, csuite, current_time=None):
+        current_time = self._get_current_time(current_time)
+
+        ctext = psk_identity.identity
+        # NB psk_identity.obfuscated_ticket_age is ignored
+
+        if ctext in self._used:
+            logger.info('INVALID TICKET: already used')
+            return None
+
+        try:
+            outer = _ServerTicketCiphertext.unpack(ctext)
+        except UnpackError:
+            logger.info('INVALID TICKET: unable to parse client ticket ctext')
+            return None
+
+        try:
+            inner = _ServerTicketPlaintext.unpack(
+                self._cipher.decrypt(outer.iv, outer.inner_ciphertext, outer.iv))
+        except InvalidTag:
+            logger.info('INVALID TICKET: unable to decrypt client ticket')
+            return None
+        except ValueError:
+            logger.info('INVALID TICKET: unable to parse client inner ticket')
+            return None
+
+        if inner.cipher_suite != csuite:
+            logger.info('INVALID TICKET: cipher suite mismatch')
+            return None
+
+        if current_time > inner.expiration + self._GRACE:
+            logger.info('INVALID TICKET: past expiration date')
+            return None
+
+        logger.info(f'received valid ticket {pformat(ctext)}; marking as used')
+        self._used.add(ctext)
+        return inner.psk
+
+
+def calc_binder_key(chello, index, secret, csuite, prefix=b''):
+    """Computes the binder key at given index within given (unpacked) client hello.
+
+    The actual binder keys must be filled in (and with the proper lengths)
+    but will be ignored.
+
+    secret is the actual PSK secret, and csuite is the cipher suite to use
+    (should be associated to the PSK).
+
+    Prefix is optionally a transcript prefix before the client hello,
+    such as from a hello retry request.
+    """
+    hst = HandshakeTranscript()
+    kc = KeyCalc(hst)
+    kc.cipher_suite = csuite
+    hst.add(HandshakeType.SERVER_HELLO, False, prefix)
+
+    exts = chello.body.extensions
+    if not exts or exts[-1].typ != ExtensionType.PRE_SHARED_KEY:
+        raise TlsError("PSK extension must come last in client hello")
+
+    pske = exts[-1].data
+    if index >= len(pske.identities) or len(pske.binders) != len(pske.identities):
+        raise TlsError("index out of bounds or mismatch in PSK extension")
+
+    raw_hello = Handshake.pack(chello)
+    pbinds = PskBinders.pack(pske.binders)
+    assert raw_hello.endswith(pbinds)
+    hst.add(HandshakeType.CLIENT_HELLO, True, raw_hello[:-len(pbinds)])
+
+    kc.psk = secret
+    binder = kc.get_verify_data(kc.binder_key, hst[-1])
+
+    if len(binder) != len(pske.binders[index]):
+        raise TlsError("binder key in client hello has the wrong length")
+
+    return binder
 
