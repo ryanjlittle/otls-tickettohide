@@ -350,24 +350,6 @@ class _ServerHandshake:
         )
 
 
-def serve_once(hostname='localhost', port=5000, cert_secrets=None, rseed=None):
-    """Starts a server that accepts exactly one connection.
-
-    Returns the connected Server object.
-    """
-    if cert_secrets is None:
-        logger.info('generating new self-signed server cert')
-        cert_secrets = gen_cert(hostname)
-
-    with socket.create_server((hostname, port)) as ssock:
-        logger.info(f'listening for connection to {hostname} on port {port}')
-        sock, addr = ssock.accept()
-        logger.info(f'got a connection from {addr}')
-        server = Server(cert_secrets, None, rseed)
-        server.connect_socket(sock)
-        return server
-
-
 class _ThreadLogFilter(logging.Filter):
     # inspired by https://stackoverflow.com/a/55035193/1008966
     def __init__(self, tname, *args, **kwargs):
