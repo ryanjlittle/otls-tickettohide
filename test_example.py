@@ -12,7 +12,7 @@ from tls_client import Client, ClientSecrets
 from io import BytesIO
 import logging
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('test_example')
 
 class Example:
     capdir = Path() / 'illustrated-tls13' / 'captures' / 'caps'
