@@ -1,0 +1,79 @@
+https://dns.google/query?name=tls-ech.dev&rr_type=HTTPS&ecs=&show_dnssec=true
+https://datatracker.ietf.org/doc/html/draft-ietf-tls-esni-24 sect 4
+https://datatracker.ietf.org/doc/html/rfc9180
+
+ 0 00 : 00  ECHConfigList.length = 0x0049 {
+ 1 01 : 49  }
+ 2 02 : fe  ECHConfig { version=0xfe0d {
+ 3 03 : 0d    }
+ 4 04 : 00    length = 0x0045 {
+ 5 05 : 45    }
+ 6 06 : 2b    ECHConfigContents { HpkeKeyConfig { config_id=0x2b
+ 7 07 : 00        HpkeKemId = 0x0020 {
+ 8 08 : 20        }
+ 9 09 : 00        HpkePublicKey.length = 0x0020 {
+10 0a : 20        }
+11 0b : 01        HpkePublicKey.value {
+12 0c : 58
+13 0d : 81
+14 0e : d4
+15 0f : 1a
+16 10 : 3e
+17 11 : 2e
+18 12 : f8
+19 13 : f2
+20 14 : 20
+21 15 : 81
+22 16 : 85
+23 17 : dc
+24 18 : 47
+25 19 : 92
+26 1a : 45
+27 1b : d2
+28 1c : 06
+29 1d : 24
+30 1e : dd
+31 1f : d0
+32 20 : 91
+33 21 : 8a
+34 22 : 80
+35 23 : 56
+36 24 : f2
+37 25 : e2
+38 26 : 6a
+39 27 : f4
+40 28 : 7e
+41 29 : 26
+42 2a : 28        }
+43 2b : 00        HpkeSymmetricCipherSuite.length = 0x0008 {
+44 2c : 08        }
+45 2d : 00        HpkeSymmetricCipherSuite[0] { kdf_id = 0x0001 {
+46 2e : 01          }
+47 2f : 00          aead_id = 0x0001 {
+48 30 : 01        }}
+49 31 : 00        HpkeSymmetricCipherSuite[1] { kdf_id = 0x0001 {
+50 32 : 01          }
+51 33 : 00          aead_id = 0x0003 {
+52 34 : 03      }}}
+53 35 : 40      maximum_name_length = 0x40
+54 36 : 12      public_name.length = 0x12
+55 37 : 70      public_name.value = 'public.tls-ech.dev' {
+56 38 : 75
+57 39 : 62
+58 3a : 6c
+59 3b : 69
+60 3c : 63
+61 3d : 2e
+62 3e : 74
+63 3f : 6c
+64 40 : 73
+65 41 : 2d
+66 42 : 65
+67 43 : 63
+68 44 : 68
+69 45 : 2e
+70 46 : 64
+71 47 : 65
+72 48 : 76      }
+73 49 : 00      Extensions.length = 0x00 {
+74 4a : 00 }}}
