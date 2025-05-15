@@ -10,6 +10,8 @@ for how they are used in TLS.
 
 from datetime import timedelta, datetime
 from collections import namedtuple
+from random import Random
+from secrets import SystemRandom
 
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives.asymmetric.x448 import X448PrivateKey, X448PublicKey
@@ -26,13 +28,70 @@ from cryptography.hazmat.primitives.asymmetric import padding as crypto_padding
 from cryptography.exceptions import InvalidSignature
 from cryptography import x509
 from cryptography.x509.oid import NameOID
+import pyhpke
 
 from tls_common import *
-from tls13_spec import NamedGroup, SignatureScheme, CipherSuite, HkdfLabel
+from spec import Struct, Bounded, Raw, kwdict
+from tls13_spec import (
+    NamedGroup,
+    SignatureScheme,
+    CipherSuite,
+    HkdfLabel,
+    HpkeKemId,
+    HpkeKdfId,
+    HpkeAeadId,
+    ECHConfig,
+)
 
+#TODO this should go away, just experimenting...
+from dataclasses import is_dataclass, fields
+def to_json(x):
+    if isinstance(x, (int, float, str)):
+        return x
+    if isinstance(x, bytes):
+        return x.hex()
+    if is_dataclass(x):
+        d = {}
+        for fld in fields(x):
+            d[fld.name] = to_json(getattr(x, fld.name))
+        return d
+    if isinstance(x, Mapping):
+        d = {}
+        for k,v in x.items():
+            if not isinstance(k, str):
+                raise ValueError(f'json dict keys must be strings; got "{k}"')
+            d[k] = to_json(v)
+        return d
+    if isinstance(x, Iterable):
+        return [to_json(y) for y in x]
+    raise ValueError(f'could not convert to json: "{x}"')
+def from_json(o,cls=Any):
+    if issubclass(cls, (int, float, str)):
+        return cls(o)
+    if issubclass(cls, bytes):
+        return bytes.fromhex(o)
+    if is_dataclass(cls):
+        d = {}
+        for fld in fields(cls):
+            d[fld.name] = from_json(o[fld.name], fld.type)
+        return cls(**d)
+    return o
 
-CertSecrets = namedtuple('CertSecrets', 'sig_alg private_key cert_der')
+@dataclass
+class CertSecrets:
+    sig_alg: SignatureScheme
+    private_key: bytes
+    cert_der: bytes
 
+@dataclass
+class EchSecrets:
+    config: Struct #ECHConfig
+    private_key: bytes
+
+@dataclass
+class ServerSecrets:
+    cert: CertSecrets
+    eches: list[EchSecrets]
 
 class _XKex:
     """Key exchange support in X* groups using python cryptography module."""
@@ -85,8 +144,8 @@ class _PycaSig:
     def __init__(self, **sig_options):
         self._sig_options = sig_options
 
-    def gen_private(self):
-        return pyca_to_bytes(self._gen_private_pyca())
+    def gen_private(self, rgen: Random) -> bytes:
+        return pyca_to_bytes(self._gen_private_pyca(rgen))
 
     def get_public(self, privkey):
         return pyca_to_bytes(
@@ -113,23 +172,30 @@ class _PycaSig:
 
 
 class _PycaECDSA(_PycaSig):
-    def __init__(self, curve, hash_alg):
+    def __init__(self, curve, hash_alg, gen_bits: int):
         super().__init__(
-            signature_algorithm = ECDSA(hash_alg()),
+            signature_algorithm = ECDSA(hash_alg(), deterministic_signing=True),
         )
         self._curve = curve
+        self._gen_bits = gen_bits
 
-    def _gen_private_pyca(self):
-        return ec.generate_private_key(self._curve())
+    def _gen_private_pyca(self, rgen: Random) -> bytes:
+        for _ in range(128):
+            try:
+                return ec.derive_private_key(rgen.randrange(2**self._gen_bits), self._curve())
+            except ValueError:
+                continue # try again
+        raise ValueError("failed EC private key generation 128 times")
 
 
 class _PycaEdDSA(_PycaSig):
-    def __init__(self, KeyClass):
+    def __init__(self, KeyClass, keylen: int):
         super().__init__()
         self._KeyClass = KeyClass
+        self._keylen = keylen
 
-    def _gen_private_pyca(self):
-        return self._KeyClass.generate()
+    def _gen_private_pyca(self, rgen: Random) -> bytes:
+        return self._KeyClass.generate(rgen.randbytes(self._keylen))
 
 
 class _PycaRSA(_PycaSig):
@@ -150,7 +216,8 @@ class _PycaRSA(_PycaSig):
             algorithm = hash_alg(),
         )
 
-    def _gen_private_pyca(self):
+    def _gen_private_pyca(self, rgen: Random) -> bytes:
+        # XXX doesn't actually use rgen!!
         return rsa.generate_private_key(
             public_exponent = 65537,
             key_size        = 4096,
@@ -187,16 +254,16 @@ def get_sig_alg(scheme):
     """
     match scheme:
         case SignatureScheme.ECDSA_SECP256R1_SHA256:
-            return _PycaECDSA(SECP256R1, SHA256)
+            return _PycaECDSA(SECP256R1, SHA256, 256)
         case SignatureScheme.ECDSA_SECP384R1_SHA384:
-            return _PycaECDSA(SECP384R1, SHA384)
+            return _PycaECDSA(SECP384R1, SHA384, 384)
         case SignatureScheme.ECDSA_SECP521R1_SHA512:
-            return _PycaECDSA(SECP521R1, SHA512)
+            return _PycaECDSA(SECP521R1, SHA512, 512)
 
         case SignatureScheme.ED25519:
-            return _PycaEdDSA(Ed25519PrivateKey)
+            return _PycaEdDSA(Ed25519PrivateKey, 32)
         case SignatureScheme.ED448:
-            return _PycaEdDSA(Ed448PrivateKey)
+            return _PycaEdDSA(Ed448PrivateKey, 57)
 
         case (SignatureScheme.RSA_PSS_RSAE_SHA256 | SignatureScheme.RSA_PSS_PSS_SHA256):
             return _PycaRSA.pss(SHA256)
@@ -351,6 +418,51 @@ DEFAULT_CIPHER_SUITES = (
 )
 
 
+def _get_pyhpke_cs(
+    kem_id = pyhpke.KEMId.DHKEM_X25519_HKDF_SHA256,
+    kdf_id = pyhpke.KDFId.HKDF_SHA256,
+    aead_id = pyhpke.AEADId.CHACHA20_POLY1305,
+) -> pyhpke.CipherSuite:
+    return pyhpke.CipherSuite.new(kem_id, kdf_id, aead_id)
+
+_Pyhpke_Keypair = Struct(
+    private = Bounded(2, Raw),
+    public  = Bounded(2, Raw),
+)
+
+class _Pyhpke_Kem:
+    def __init__(self, kem_id: pyhpke.KEMId):
+        self._kem = _get_pyhpke_cs(kem_id=kem_id).kem
+
+    def gen_private(self, rgen: Random) -> bytes:
+        keypair = self._kem.derive_key_pair(rgen.randbytes(64))
+        return _Pyhpke_Keypair.pack(
+            private = keypair.private_key.to_private_bytes(),
+            public  = keypair.public_key.to_public_bytes(),
+        )
+
+    def get_public(self, private: bytes) -> bytes:
+        return _Pyhpke_Keypair.unpack(private).public
+
+
+def get_kem_alg(kem_id: HpkeKemId) -> _Pyhpke_Kem:
+    """Given a kem_id, returns an object to do key encapsulation.
+    The returned object kex will have:
+        kem.gen_private(rgen) -> private
+        kem.get_public(private) -> public
+    """
+    return _Pyhpke_Kem(pyhpke.KEMId(int(kem_id)))
+
+DEFAULT_KEM = HpkeKemId.DHKEM_X25519_HKDF_SHA256
+
+
+# TODO cipher suites
+DEFAULT_HPKE_CSUITES = [
+    (HpkeKdfId.HKDF_SHA256, HpkeAeadId.AES_256_GCM),
+    (HpkeKdfId.HKDF_SHA256, HpkeAeadId.CHACHA20_POLY1305),
+]
+
+
 class StreamCipher:
     def __init__(self, cipher, hash_alg, secret):
         self._cipher = cipher
@@ -416,27 +528,25 @@ def derive_secret(hash_alg, secret, label, msg_digest):
                              cont=msg_digest, length=hash_alg.digest_size)
 
 
-def gen_cert(
-        name='localhost',
-        sig_alg=DEFAULT_SIGNATURE_SCHEMES[0]
-        ):
+def gen_cert(name: str, sig_alg: SignatureScheme, rgen: Random) -> CertSecrets:
     """Generates a new self-signed X509 certificate.
 
     A fresh signature keypair is generated and the private key
     is returned in a bytes encoding.
 
-    The cert is valid for 1 year from the current date and has a
-    randomly-chosen serial number.
+    The cert is valid for 10 years.
 
     Returns a CertSecrets tuple."""
     sigscheme = get_sig_alg(sig_alg)
-    private_key = sigscheme.gen_private()
+    private_key = sigscheme.gen_private(rgen)
+    # https://github.com/pyca/cryptography/blob/main/src/cryptography/x509/base.py#L847-L848
+    serialno = rgen.randrange(2**(20*8-1))
     cert = (x509.CertificateBuilder()
         .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)]))
         .issuer_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)]))
-        .not_valid_before(datetime.today() - timedelta(days=1))
-        .not_valid_after(datetime.today() + timedelta(days=365))
-        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime(year=2025,month=1,day=1))
+        .not_valid_after(datetime(year=2035,month=1,day=1))
+        .serial_number(serialno)
         .public_key(pyca_from_bytes(sigscheme.get_public(private_key)))
         .add_extension(x509.SubjectAlternativeName([x509.DNSName(name)]),critical=False)
         .add_extension(x509.BasicConstraints(ca=False,path_length=None), critical=True)
@@ -445,4 +555,54 @@ def gen_cert(
         sig_alg = sig_alg,
         private_key = private_key,
         cert_der = cert.public_bytes(Encoding.DER),
+    )
+
+
+def gen_ech_config(
+    public_name: str,
+    config_id: int,
+    maximum_name_length: int,
+    kem_id: HpkeKemId,
+    cipher_suites: Iterable[tuple[HpkeKdfId,HpkeAeadId]],
+    rgen: Random,
+) -> tuple[Struct, bytes]:
+    """Generates an ECHConfig struct and corresponding private key."""
+    kem = get_kem_alg(kem_id)
+    seckey = kem.gen_private(rgen)
+    pubkey = kem.get_public(seckey)
+    config = ECHConfig.prepack(
+        version = 0xfe0d,
+        contents = kwdict(
+            key_config = kwdict(
+                config_id = config_id,
+                kem_id = kem_id,
+                public_key = pubkey,
+                cipher_suites = cipher_suites,
+            ),
+            maximum_name_length = maximum_name_length,
+            public_name = public_name,
+            extensions = [],
+        ),
+    )
+    return EchSecrets(config=config, private_key=seckey)
+
+
+def gen_server_secrets(
+    name: str ='localhost',
+    sig_alg: SignatureScheme = DEFAULT_SIGNATURE_SCHEMES[0],
+    config_id: int|None = None, # default, choose randomly
+    maximum_name_length: int = 128,
+    kem_id: HpkeKemId = DEFAULT_KEM,
+    cipher_suites: Iterable[tuple[HpkeKdfId,HpkeAeadId]] = DEFAULT_HPKE_CSUITES,
+    rgen: Random|None = None, # default, SystemRandom
+) -> ServerSecrets:
+    """Generates a fresh certificate and ECH config."""
+    if rgen is None:
+        rgen = SystemRandom()
+    if config_id is None:
+        config_id = rgen.randrange(2**8)
+
+    return ServerSecrets(
+        cert = gen_cert(name, sig_alg, rgen),
+        eches = [gen_ech_config(name, config_id, maximum_name_length, kem_id, cipher_suites, rgen)],
     )

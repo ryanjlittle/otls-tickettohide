@@ -41,14 +41,15 @@ from tls_crypto import (
 class Server(Connection):
     """Handles a single TLS 1.3 connection from the server side."""
 
-    def __init__(self, cert_secrets, ticketer, rseed=None):
-        super().__init__(None, _ServerHandshake(cert_secrets, ticketer, rseed))
+    def __init__(self, server_secrets, ticketer, rseed=None):
+        super().__init__(None, _ServerHandshake(server_secrets, ticketer, rseed))
 
 
 class _ServerHandshake:
-    def __init__(self, cert_secrets, ticketer, rseed):
+    def __init__(self, server_secrets, ticketer, rseed):
         self._state = ServerState.START
-        self._cert_secrets = cert_secrets
+        self._cert_secrets = server_secrets.cert
+        self._ech_secrets_list = server_secrets.eches
         self._ticketer = ticketer
         self._ticket_count = 0
         self._rgen = SystemRandom() if rseed is None else Random(seed)
@@ -113,6 +114,9 @@ class _ServerHandshake:
 
     def _process_client_hello(self, body):
         assert self._state == ServerState.START
+
+        # TODO check for acceptance of ECH
+
         self._state = ServerState.RECVD_CH
         self._chello = Handshake.prepack(HandshakeType.CLIENT_HELLO, body)
 
@@ -188,7 +192,7 @@ class _ServerHandshake:
 
         ee_raw = Handshake.pack(
             typ  = HandshakeType.ENCRYPTED_EXTENSIONS,
-            body = [],
+            body = self._ee_exts,
         )
         self._send_hs_msg(typ=HandshakeType.ENCRYPTED_EXTENSIONS, raw=ee_raw)
         logger.info(f'sent EE')
@@ -310,6 +314,13 @@ class _ServerHandshake:
                         break
                 else:
                     raise TlsError("none of the provided tickets could be used")
+            case ExtensionType.ENCRYPTED_CLIENT_HELLO:
+                logger.info(f'got ECH from client (that will be rejected) with config id {ext.data.data.config_id}')
+                self._saved_ech = ext
+                self._ee_exts.append(ServerExtension.prepack(
+                    typ = ExtensionType.ENCRYPTED_CLIENT_HELLO,
+                    data = [es.config for es in self._ech_secrets_list],
+                ))
             case _:
                 logger.info(f'IGNORING extension with type {ext.typ}')
 
@@ -384,16 +395,16 @@ class _ServerThread:
             logger.removeHandler(log_handle)
 
 
-def start_server(handler, hostname='localhost', port=5000, cert_secrets=None, rseed=None):
+def start_server(handler, hostname='localhost', port=5000, server_secrets=None, rseed=None):
     """Starts a server that calls a handler to handle each connection.
 
     Handler should be runnable and accept one argument of type Server.
     The Server object will be connected before the handler is started.
     Each connection will run in a separate thread.
     """
-    if cert_secrets is None:
-        logger.info('generating new self-signed server cert')
-        cert_secrets = gen_cert(hostname)
+    if server_secrets is None:
+        logger.info('generating new self-signed server cert and ECH config')
+        server_secrets = gen_server_secrets(hostname)
 
     ticketer = ServerTicketer()
 
@@ -402,7 +413,7 @@ def start_server(handler, hostname='localhost', port=5000, cert_secrets=None, rs
         while True:
             logger.info(f'listening for connection to {hostname} on port {port}')
             sock, addr = ssock.accept()
-            st = _ServerThread(handler, cert_secrets, ticketer, rseed)
+            st = _ServerThread(handler, server_secrets, ticketer, rseed)
             tname = f's{count}'
             sthread = Thread(name=tname, target=st, args=(sock,addr,))
             logger.info(f'launching new thread to handle client connection')

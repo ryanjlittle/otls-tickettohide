@@ -241,9 +241,9 @@ class ECHConfigExtensionType(IntEnum, metaclass=_FixedEnum, bytelen=2):
 
 
 class HpkeKemId(IntEnum, metaclass=_FixedEnum, bytelen=2):
-    DHKEM_P_256_HKDF_SHA256  = 0x0010
-    DHKEM_P_384_HKDF_SHA384  = 0x0011
-    DHKEM_P_521_HKDF_SHA512  = 0x0012
+    DHKEM_P256_HKDF_SHA256  = 0x0010
+    DHKEM_P384_HKDF_SHA384  = 0x0011
+    DHKEM_P521_HKDF_SHA512  = 0x0012
     DHKEM_X25519_HKDF_SHA256 = 0x0020
     DHKEM_X448_HKDF_SHA512   = 0x0021
 
