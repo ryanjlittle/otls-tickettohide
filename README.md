@@ -9,7 +9,8 @@ should not be used by anyone.**
 ## Dependencies
 
 *   Python 3.11 or later
-*   [pyca cryptography (pip)](https://pypi.org/project/cryptography/)
+*   [pyca cryptography](https://cryptography.io/en/latest/)
+*   [pyhpke](https://github.com/dajiaji/pyhpke)
 
 ## Quickstart
 
@@ -23,7 +24,7 @@ should not be used by anyone.**
 
 3.  Install dependencies in the venv
 
-        python3 -m pip install cryptography
+        python3 -m pip install cryptography pyhpke
 
 4.  Test with a static example (not over the network)
 
