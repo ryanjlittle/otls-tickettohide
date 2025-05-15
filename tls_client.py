@@ -16,6 +16,10 @@ from tls13_spec import (
     PskKeyExchangeMode,
     ExtensionType,
     Version,
+    ClientExtension,
+    ECHClientHelloType,
+    HpkeKdfId,
+    HpkeAeadId,
 )
 from tls_crypto import (
     get_kex_alg,
@@ -53,6 +57,10 @@ class Client(Connection):
     @property
     def tickets(self):
         return tuple(self._handshake.tickets)
+
+    @property
+    def ech_configs(self):
+        return tuple(self._handshake.ech_configs)
 
 
 class _ClientHandshake:
@@ -93,6 +101,7 @@ class _ClientHandshake:
         self._hs_trans = HandshakeTranscript()
         self._key_calc = KeyCalc(self._hs_trans)
         self.tickets = []
+        self.ech_configs = []
 
     @property
     def started(self):
@@ -234,8 +243,11 @@ class _ClientHandshake:
                 case ExtensionType.SUPPORTED_GROUPS:
                     # only informational; ignore
                     pass
+                case ExtensionType.ENCRYPTED_CLIENT_HELLO:
+                    logging.info(f'received {len(ext.data)} ECH configs in server EE')
+                    self.ech_configs.extend(ext.data)
                 case _:
-                    logger.warning("Ignoring server extension extension", ext.typ)
+                    logger.warning(f"Ignoring server extension extension of type {ext.typ}")
 
         logger.info(f"Finished processing server encrypted extensions")
         if self._psk is None:
@@ -319,6 +331,7 @@ def build_client_hello(
         psk_modes = (PskKeyExchangeMode.PSK_DHE_KE,),
         send_time = None, # default to current time
         rseed = None, # optional seed for repeatability; NOT secure
+        grease_ech = False, # send a GREASE ECH extension (to gather server parameters)
         ):
     """Returns (unpacked) ClientHello handshake struct and ClientSecrets tuple."""
 
@@ -381,6 +394,23 @@ def build_client_hello(
     if shares:
         # send the DHE public key
         extensions.append((ExtensionType.KEY_SHARE, shares))
+
+    # add GREASE ECH if requested
+    extensions.append(ClientExtension.prepack(
+        typ  = ExtensionType.ENCRYPTED_CLIENT_HELLO,
+        data = kwdict(
+            typ  = ECHClientHelloType.OUTER,
+            data = kwdict(
+                cipher_suite = kwdict(
+                    kdf_id = HpkeKdfId.HKDF_SHA256,
+                    aead_id = HpkeAeadId.CHACHA20_POLY1305,
+                ),
+                config_id = rgen.randrange(2**8),
+                enc = rgen.randbytes(32),
+                payload = rgen.randbytes(239),
+            ),
+        ),
+    ))
 
     # calculate client hello handshake message
     ch = Handshake.prepack(

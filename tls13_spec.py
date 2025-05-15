@@ -117,6 +117,7 @@ class ExtensionType(IntEnum, metaclass=_FixedEnum, bytelen=2):
     KEY_SHARE                              = 51
     TICKET_REQUEST                         = 58
     UNSUPPORTED                            = 2570
+    ENCRYPTED_CLIENT_HELLO                 = 65037
 
     @classmethod
     def _missing_(cls, value):
@@ -227,6 +228,36 @@ class AlertDescription(IntEnum, metaclass=_FixedEnum, bytelen=1):
     NO_APPLICATION_PROTOCOL             = 120
 
 
+class ECHClientHelloType(IntEnum, metaclass=_FixedEnum, bytelen=1):
+    OUTER = 0
+    INNER = 1
+
+class ECHConfigExtensionType(IntEnum, metaclass=_FixedEnum, bytelen=2):
+    UNSUPPORTED = 0xffff
+
+    @classmethod
+    def _missing_(cls, value):
+        return cls.UNSUPPORTED
+
+
+class HpkeKemId(IntEnum, metaclass=_FixedEnum, bytelen=2):
+    DHKEM_P_256_HKDF_SHA256  = 0x0010
+    DHKEM_P_384_HKDF_SHA384  = 0x0011
+    DHKEM_P_521_HKDF_SHA512  = 0x0012
+    DHKEM_X25519_HKDF_SHA256 = 0x0020
+    DHKEM_X448_HKDF_SHA512   = 0x0021
+
+class HpkeKdfId(IntEnum, metaclass=_FixedEnum, bytelen=2):
+    HKDF_SHA256 = 0x0001
+    HKDF_SHA384 = 0x0002
+    HKDF_SHA512 = 0x0003
+
+class HpkeAeadId(IntEnum, metaclass=_FixedEnum, bytelen=2):
+    AES_128_GCM       = 0x0001
+    AES_256_GCM       = 0x0002
+    CHACHA20_POLY1305 = 0x0003
+
+
 HkdfLabel = Struct(
     length  = Integer(2),
     label   = Bounded(1, Raw),
@@ -259,6 +290,11 @@ PskIdentity = Struct(
 
 PskBinders = Bounded(2, Sequence(Bounded(1, Raw)))
 
+HpkeSymmetricCipherSuite = Struct(
+    kdf_id  = HpkeKdfId,
+    aead_id = HpkeAeadId,
+)
+
 ClientExtension = Select(
     typ = ExtensionType,
     data = SelectBounded(2, common_extensions | {
@@ -278,8 +314,43 @@ ClientExtension = Select(
                 identities = Bounded(2, Sequence(PskIdentity)),
                 binders    = PskBinders,
             ),
+        ExtensionType.ENCRYPTED_CLIENT_HELLO
+            : Select(
+                typ  = ECHClientHelloType,
+                data = {
+                    ECHClientHelloType.OUTER: Struct(
+                        cipher_suite = HpkeSymmetricCipherSuite,
+                        config_id    = Integer(1),
+                        enc          = Bounded(2, Raw),
+                        payload      = Bounded(2, Raw),
+                    ),
+                    ECHClientHelloType.INNER: Padding(0),
+                }.__getitem__,
+            ),
     })
 )
+
+ECHConfig = Select(
+    version = Integer(2),
+    contents = SelectBounded(2, {
+        0xfe0d: Struct(
+            key_config = Struct (
+                config_id     = Integer(1),
+                kem_id        = HpkeKemId,
+                public_key    = Bounded(2, Raw),
+                cipher_suites = Bounded(2, Sequence(HpkeSymmetricCipherSuite)),
+            ),
+            maximum_name_length = Integer(1),
+            public_name         = Bounded(1, String),
+            extensions          = Bounded(2, Sequence(Struct(
+                typ  = ECHConfigExtensionType,
+                data = Bounded(2, Raw),
+            ))),
+        ),
+    }),
+)
+
+ECHConfigList = Bounded(2, Sequence(ECHConfig))
 
 ServerExtension = Select(
     typ = ExtensionType,
@@ -292,6 +363,8 @@ ServerExtension = Select(
             : Struct(expected_count = Integer(1)),
         ExtensionType.PRE_SHARED_KEY
             : Integer(2),
+        ExtensionType.ENCRYPTED_CLIENT_HELLO
+            : ECHConfigList,
     })
 )
 
