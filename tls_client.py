@@ -331,7 +331,7 @@ def build_client_hello(
         psk_modes = (PskKeyExchangeMode.PSK_DHE_KE,),
         send_time = None, # default to current time
         rseed = None, # optional seed for repeatability; NOT secure
-        grease_ech = False, # send a GREASE ECH extension (to gather server parameters)
+        grease_ech = True, # send a GREASE ECH extension (to gather server parameters)
         ):
     """Returns (unpacked) ClientHello handshake struct and ClientSecrets tuple."""
 

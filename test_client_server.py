@@ -9,7 +9,7 @@ import logging
 
 from tls_client import Client, ClientSecrets
 from tls_server import Server
-from tls_crypto import gen_cert
+from tls_crypto import gen_server_secrets
 from tls_keycalc import ServerTicketer
 
 logger = logging.getLogger('test_client_server')
@@ -18,11 +18,11 @@ logger = logging.getLogger('test_client_server')
 class ServerTest:
     def __init__(self, hostname):
         logger.info(f'generating new self-signed cert for {hostname}')
-        self._cert_secrets = gen_cert(hostname)
+        self._server_secrets = gen_server_secrets(hostname)
         self._ticketer = ServerTicketer()
 
     def go(self, ssock, in_msgs, out_msgs, rseed=None):
-        server = Server(self._cert_secrets, self._ticketer, rseed)
+        server = Server(self._server_secrets, self._ticketer, rseed)
         logger.info(f'server trying to connect and send {len(out_msgs)} messages')
         sock, addr = ssock.accept()
         logger.info(f'got a connection from client on {addr}')
