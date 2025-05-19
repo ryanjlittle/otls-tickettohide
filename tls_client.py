@@ -5,7 +5,7 @@ from collections import namedtuple
 from secrets import SystemRandom
 from random import Random
 
-from spec import kwdict
+from spec import kwdict, UnpackError
 from tls_common import *
 from tls13_spec import (
     Handshake,

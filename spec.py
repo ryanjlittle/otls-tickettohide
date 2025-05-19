@@ -73,7 +73,7 @@ def force_read(src, size):
 def force_write(dest, raw):
     written = dest.write(raw)
     if written != len(raw):
-        raise BrokenPipeError(f'tried to write {len(raw)} bytes {pformat(raw)}, but only wrote {writen}')
+        raise BrokenPipeError(f'tried to write {len(raw)} bytes {pformat(raw)}, but only wrote {written}')
     dest.flush()
 
 

@@ -10,7 +10,7 @@ from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.exceptions import InvalidTag
 
 from util import b64enc, b64dec
-from spec import kwdict, Struct, Integer, Bounded, Raw, pformat
+from spec import kwdict, Struct, Integer, Bounded, Raw, pformat, UnpackError
 from tls_common import *
 from tls13_spec import (
     Handshake,

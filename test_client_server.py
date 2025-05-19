@@ -16,9 +16,9 @@ logger = logging.getLogger('test_client_server')
 
 
 class ServerTest:
-    def __init__(self, hostname):
+    def __init__(self, hostname, rgen=None):
         logger.info(f'generating new self-signed cert for {hostname}')
-        self._server_secrets = gen_server_secrets(hostname)
+        self._server_secrets = gen_server_secrets(hostname, rgen=rgen)
         self._ticketer = ServerTicketer()
 
     def go(self, ssock, in_msgs, out_msgs, rseed=None):
