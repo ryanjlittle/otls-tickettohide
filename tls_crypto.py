@@ -81,12 +81,14 @@ def from_json(o,cls=Any):
 class CertSecrets:
     sig_alg: SignatureScheme
     private_key: bytes
+    public_key: bytes
     cert_der: bytes
 
 @dataclass
 class EchSecrets:
     config: Struct #ECHConfig
     private_key: bytes
+    public_key: bytes
 
 @dataclass
 class ServerSecrets:
@@ -539,6 +541,7 @@ def gen_cert(name: str, sig_alg: SignatureScheme, rgen: Random) -> CertSecrets:
     Returns a CertSecrets tuple."""
     sigscheme = get_sig_alg(sig_alg)
     private_key = sigscheme.gen_private(rgen)
+    public_key = sigscheme.get_public(private_key)
     # https://github.com/pyca/cryptography/blob/main/src/cryptography/x509/base.py#L847-L848
     serialno = rgen.randrange(2**(20*8-1))
     cert = (x509.CertificateBuilder()
@@ -554,6 +557,7 @@ def gen_cert(name: str, sig_alg: SignatureScheme, rgen: Random) -> CertSecrets:
     return CertSecrets(
         sig_alg = sig_alg,
         private_key = private_key,
+        public_key = public_key,
         cert_der = cert.public_bytes(Encoding.DER),
     )
 
@@ -584,7 +588,7 @@ def gen_ech_config(
             extensions = [],
         ),
     )
-    return EchSecrets(config=config, private_key=seckey)
+    return EchSecrets(config=config, private_key=seckey, public_key=pubkey)
 
 
 def gen_server_secrets(
