@@ -35,7 +35,7 @@ from tls_crypto import (
     get_hash_alg,
     get_cipher_alg,
     get_sig_alg,
-    get_kex_alg,
+    get_kex_alg, gen_server_secrets,
 )
 
 class Server(Connection):
@@ -44,7 +44,6 @@ class Server(Connection):
     def __init__(self, server_secrets, ticketer, rseed=None):
         super().__init__(None, _ServerHandshake(server_secrets, ticketer, rseed))
 
-
 class _ServerHandshake:
     def __init__(self, server_secrets, ticketer, rseed):
         self._state = ServerState.START
@@ -52,7 +51,7 @@ class _ServerHandshake:
         self._ech_secrets_list = server_secrets.eches
         self._ticketer = ticketer
         self._ticket_count = 0
-        self._rgen = SystemRandom() if rseed is None else Random(seed)
+        self._rgen = SystemRandom() if rseed is None else Random(rseed)
         self._hs_trans = HandshakeTranscript()
         self._key_calc = KeyCalc(self._hs_trans)
         self._sh_exts = []
@@ -325,6 +324,7 @@ class _ServerHandshake:
                 logger.info(f'IGNORING extension with type {ext.typ}')
 
 
+
     def _process_finished(self, body):
         if body != self._key_calc.client_finished_verify:
             raise TlsError("client finished has incorrect verify string")
@@ -361,6 +361,16 @@ class _ServerHandshake:
         )
 
 
+@dataclass
+class ServerID:
+    hostname: str
+    port: int
+    cert_pubkey: bytes
+    ech_pubkeys: list[bytes]
+
+    def to_string(self):
+        return f'{self.hostname}:{self.port}'
+
 class _ThreadLogFilter(logging.Filter):
     # inspired by https://stackoverflow.com/a/55035193/1008966
     def __init__(self, tname, *args, **kwargs):
@@ -395,7 +405,7 @@ class _ServerThread:
             logger.removeHandler(log_handle)
 
 
-def start_server(handler, hostname='localhost', port=5000, server_secrets=None, rseed=None):
+def start_server(handler, hostname='localhost', port=0, server_secrets=None, rseed=None):
     """Starts a server that calls a handler to handle each connection.
 
     Handler should be runnable and accept one argument of type Server.
@@ -408,7 +418,7 @@ def start_server(handler, hostname='localhost', port=5000, server_secrets=None, 
 
     ticketer = ServerTicketer()
 
-    count = 1
+    count = 0
     with socket.create_server((hostname, port)) as ssock:
         while True:
             logger.info(f'listening for connection to {hostname} on port {port}')
