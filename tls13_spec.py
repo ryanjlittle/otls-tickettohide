@@ -38,6 +38,12 @@ class _FixedEnum(FixedSize, EnumType):
             raise ParseError(f'could not convert {value} to {self}') from e
 
 
+def _is_grease_2byte(n):
+    # for extensions, named groups, signature algorithms, and versions
+    # e.g. 0x0a0a, 0x1a1a, ..., 0xfafa
+    return (n & 0xff) == (n >> 8) and (n & 0x0f) == 0x0a
+
+
 class ClientState(IntEnum, metaclass=_FixedEnum, bytelen=1):
     # rfc8446#appendix-A.1
     START         = 0
@@ -190,11 +196,18 @@ class CertificateType(IntEnum, metaclass=_FixedEnum, bytelen=1):
     X509         = 0
     RawPublicKey = 2
 
-
 class Version(IntEnum, metaclass=_FixedEnum, bytelen=2):
     TLS_1_0 = 0x0301
     TLS_1_2 = 0x0303
     TLS_1_3 = 0x0304
+    GREASE  = 0x0a0a
+
+    @classmethod
+    def _missing_(cls, value):
+        if _is_grease_2byte(value):
+            return cls.GREASE
+        else:
+            raise ParseError(f'unexpected Version {value} = {hex(value)}')
 
 
 class AlertLevel(IntEnum, metaclass=_FixedEnum, bytelen=1):

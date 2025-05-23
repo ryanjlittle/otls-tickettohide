@@ -1,26 +1,35 @@
 #!/usr/bin/env python3
 
+from spec import *
+from tls13_spec import *
 from tls_common import *
 from tls_crypto import *
 from tls_keycalc import *
 from tls_server import *
 
+from dataclasses import dataclass, field
+from typing import Any
 
+@dataclass
 class Experiment:
-    def __init__(self, hostname='localhost', port=8000):
-        self._hostname = hostname
-        self._port = port
-        self._secrets = gen_server_secrets(self._hostname)
-        self._ticketer = ServerTicketer()
-        self._count = 0
+    hostname: str = 'localhost'
+    port: int = 8000
+    secrets: ServerSecrets = field(init=False)
+    ticketer: ServerTicketer = field(init=False, default_factory=ServerTicketer)
+    count: int = field(init=False, default=0)
+    last_svr: Server|None = field(init=False, default=None)
+
+    def __post_init__(self):
+        self.secrets = gen_server_secrets(self.hostname)
 
     def connect(self, msg=None):
-        self._count += 1
+        self.count += 1
         if msg is None:
-            msg = f'connection #{self._count}'
-        svr = Server(self._secrets, self._ticketer)
-        with socket.create_server((self._hostname, self._port)) as ssock:
-            logger.info('listening on port {self._port}')
+            msg = f'connection #{self.count}'
+        svr = Server(self.secrets, self.ticketer)
+        self.last_svr = svr
+        with socket.create_server((self.hostname, self.port)) as ssock:
+            logger.info(f'listening on port {self.port}')
             sock, addr = ssock.accept()
             logger.info(f'got connection from {addr}')
             svr.connect_socket(sock)
@@ -35,4 +44,8 @@ class Experiment:
             svr.send(response)
             sock.close()
             logger.info('response sent')
-        return svr
+
+if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO)
+    exp = Experiment()
+    exp.connect()

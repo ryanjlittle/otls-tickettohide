@@ -31,7 +31,7 @@ from cryptography.x509.oid import NameOID
 import pyhpke
 
 from tls_common import *
-from spec import Struct, Bounded, Raw, kwdict
+from spec import Struct, Bounded, Raw, kwdict, Sequence
 from tls13_spec import (
     NamedGroup,
     SignatureScheme,
@@ -77,21 +77,21 @@ def from_json(o,cls=Any):
         return cls(**d)
     return o
 
-@dataclass
-class CertSecrets:
-    sig_alg: SignatureScheme
-    private_key: bytes
-    cert_der: bytes
+CertSecrets = Struct(
+    sig_alg = SignatureScheme,
+    private_key = Bounded(4, Raw),
+    cert_der = Bounded(4, Raw),
+)
 
-@dataclass
-class EchSecrets:
-    config: Struct #ECHConfig
-    private_key: bytes
+EchSecrets = Struct(
+    config = ECHConfig,
+    private_key = Bounded(4, Raw),
+)
 
-@dataclass
-class ServerSecrets:
-    cert: CertSecrets
-    eches: list[EchSecrets]
+ServerSecrets = Struct(
+    cert = CertSecrets,
+    eches = Bounded(4, Sequence(EchSecrets)),
+)
 
 class _XKex:
     """Key exchange support in X* groups using python cryptography module."""
@@ -528,7 +528,7 @@ def derive_secret(hash_alg, secret, label, msg_digest):
                              cont=msg_digest, length=hash_alg.digest_size)
 
 
-def gen_cert(name: str, sig_alg: SignatureScheme, rgen: Random) -> CertSecrets:
+def gen_cert(name: str, sig_alg: SignatureScheme, rgen: Random) -> Struct: #CertSecrets
     """Generates a new self-signed X509 certificate.
 
     A fresh signature keypair is generated and the private key
@@ -551,7 +551,7 @@ def gen_cert(name: str, sig_alg: SignatureScheme, rgen: Random) -> CertSecrets:
         .add_extension(x509.SubjectAlternativeName([x509.DNSName(name)]),critical=False)
         .add_extension(x509.BasicConstraints(ca=False,path_length=None), critical=True)
         .sign(private_key=pyca_from_bytes(private_key, private=True), algorithm=SHA256()))
-    return CertSecrets(
+    return CertSecrets.prepack(
         sig_alg = sig_alg,
         private_key = private_key,
         cert_der = cert.public_bytes(Encoding.DER),
@@ -565,7 +565,7 @@ def gen_ech_config(
     kem_id: HpkeKemId,
     cipher_suites: Iterable[tuple[HpkeKdfId,HpkeAeadId]],
     rgen: Random,
-) -> tuple[Struct, bytes]:
+) -> Struct: #EchSecrets
     """Generates an ECHConfig struct and corresponding private key."""
     kem = get_kem_alg(kem_id)
     seckey = kem.gen_private(rgen)
@@ -584,7 +584,7 @@ def gen_ech_config(
             extensions = [],
         ),
     )
-    return EchSecrets(config=config, private_key=seckey)
+    return EchSecrets.prepack(config=config, private_key=seckey)
 
 
 def gen_server_secrets(
@@ -602,7 +602,7 @@ def gen_server_secrets(
     if config_id is None:
         config_id = rgen.randrange(2**8)
 
-    return ServerSecrets(
+    return ServerSecrets.prepack(
         cert = gen_cert(name, sig_alg, rgen),
         eches = [gen_ech_config(name, config_id, maximum_name_length, kem_id, cipher_suites, rgen)],
     )

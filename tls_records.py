@@ -11,6 +11,7 @@ from tls13_spec import (
     RecordHeader,
     Version,
     InnerPlaintext,
+    Alert,
 )
 from tls_crypto import StreamCipher
 
@@ -73,7 +74,8 @@ class RecordReader:
             case ContentType.CHANGE_CIPHER_SPEC:
                 pass # ignore these ones
             case ContentType.ALERT:
-                raise TlsError(f"Received ALERT: {payload}")
+                alert = Alert.unpack(payload)
+                raise TlsError(f"Received ALERT: {alert}")
             case ContentType.HANDSHAKE:
                 self.hs_buffer.add(payload)
             case ContentType.APPLICATION_DATA:
