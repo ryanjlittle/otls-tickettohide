@@ -36,6 +36,7 @@ from tls_crypto import (
     get_cipher_alg,
     get_sig_alg,
     get_kex_alg,
+    gen_server_secrets,
 )
 
 class Server(Connection):

@@ -104,6 +104,9 @@ class ExtensionType(IntEnum, metaclass=_FixedEnum, bytelen=2):
     PADDING                                = 21
     LEGACY_ENCRYPT_THEN_MAC                = 22
     LEGACY_EXTENDED_MASTER_SECRET          = 23
+    COMPRESS_CERTIFICATE                   = 27
+    RECORD_SIZE_LIMIT                      = 28
+    DELEGATED_CREDENTIAL                   = 34
     LEGACY_SESSION_TICKET                  = 35
     PRE_SHARED_KEY                         = 41
     EARLY_DATA                             = 42
@@ -118,6 +121,7 @@ class ExtensionType(IntEnum, metaclass=_FixedEnum, bytelen=2):
     TICKET_REQUEST                         = 58
     UNSUPPORTED                            = 2570
     ENCRYPTED_CLIENT_HELLO                 = 65037
+    RENEGOTIATION_INFO                     = 65281
 
     @classmethod
     def _missing_(cls, value):
