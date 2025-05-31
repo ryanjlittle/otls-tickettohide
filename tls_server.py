@@ -424,10 +424,11 @@ def start_server(handler, hostname='localhost', port=0, server_secrets=None, rse
             logger.info(f'listening for connection to {hostname} on port {port}')
             sock, addr = ssock.accept()
             st = _ServerThread(handler, server_secrets, ticketer, rseed)
-            tname = f's{count}'
+            tname = f'{threading.current_thread().name} conn {count}'
             sthread = Thread(name=tname, target=st, args=(sock,addr,))
             logger.info(f'launching new thread to handle client connection')
             sthread.start()
             count += 1
             if rseed is not None:
                 rseed += 1
+

@@ -52,7 +52,7 @@ class Client(Connection):
         return cls(*build_client_hello(*args, **kwargs))
 
     def __init__(self, client_hello, client_secrets):
-        super().__init__(client_secrets, _ClientHandshake(client_hello, client_secrets))
+        super().__init__(client_secrets, ClientHandshake(client_hello, client_secrets))
 
     @property
     def tickets(self):
@@ -63,7 +63,7 @@ class Client(Connection):
         return tuple(self._handshake.ech_configs)
 
 
-class _ClientHandshake:
+class ClientHandshake:
     def __init__(self, client_hello, client_secrets):
         if isinstance(client_hello, bytes):
             client_hello = Handshake.unpack(Record.unpack(client_hello).payload)
@@ -244,7 +244,7 @@ class _ClientHandshake:
                     # only informational; ignore
                     pass
                 case ExtensionType.ENCRYPTED_CLIENT_HELLO:
-                    logging.info(f'received {len(ext.data)} ECH configs in server EE')
+                    logger.info(f'received {len(ext.data)} ECH configs in server EE')
                     self.ech_configs.extend(ext.data)
                 case _:
                     logger.warning(f"Ignoring server extension extension of type {ext.typ}")
