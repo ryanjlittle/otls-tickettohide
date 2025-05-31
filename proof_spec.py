@@ -6,9 +6,58 @@ protocol, and don't depend on the format of TLS.
 
 from enum import IntEnum
 
-from spec import Struct, Bounded, Raw, Sequence, Select, ParseError
+from spec import Struct, Bounded, Raw, Sequence, Select, ParseError, Spec, force_write, force_read
 from tls13_spec import Handshake, _FixedEnum
 
+
+class BoundedSequence(Spec):
+    """For sequences where each element has the same length"""
+
+    def __init__(self, elemlenlen, listlenlen, typ):
+        self._elemlenlen = elemlenlen
+        self._listlenlen = listlenlen
+        self._inner = typ
+
+    def prepack(self, obj, *args):
+        if args:
+            items = [obj] + args
+        else:
+            items = obj
+        return [self._inner.prepack(item) for item in items]
+
+    def _pack(self, items):
+        raw = [self._inner.pack(item) for item in items]
+        self._listlen = len(raw)
+        self._elemlen = len(raw[0])
+        if any([len(elem) != self._elemlen for elem in raw[1:]]):
+            raise ParseError("elements must all be the same length")
+        return b''.join(self._inner.pack(item) for item in items)
+
+    def _pack_to(self, dest, obj):
+        raw = self._pack(obj)
+        force_write(dest, self._listlen.to_bytes(self._listlenlen))
+        force_write(dest, self._elemlen.to_bytes(self._elemlenlen))
+        force_write(dest, raw)
+
+    def _unpack_from(self, src):
+        try:
+            listlen = int.from_bytes(force_read(src, self._listlenlen))
+        except ValueError as e:
+            raise ParseError("could not read BoundedSequence list length") from e
+        try:
+            elemlen = int.from_bytes(force_read(src, self._elemlenlen))
+        except ValueError as e:
+            raise ParseError("could not read BoundedSequence element length") from e
+        result = []
+        try:
+            for _ in range(listlen):
+                raw = force_read(src, elemlen)
+                result.append(self._inner._unpack(raw))
+        except ValueError as e:
+            raise ParseError(f"could not read element in BoundedSequence") from e
+        return result
+
+DHShares = BoundedSequence(1, 1, Raw)
 
 class ProverMsgType(IntEnum, metaclass=_FixedEnum, bytelen=1):
     SERVER_HANDSHAKE_TX = 1
@@ -27,39 +76,41 @@ class VerifierMsgType(IntEnum, metaclass=_FixedEnum, bytelen=1):
     DH_SECRETS        = 5
     DH_SECRET_PHASE_2 = 6
 
-def _prover_msg_spec(type):
+def _prover_msg_spec(typ):
     bodylen = 1
-    match type:
+    match typ:
         case ProverMsgType.SERVER_HANDSHAKE_TX:
-            bodyspec = Struct(
+            bodyspec = Sequence(Struct(
                 server_hello=Handshake,
                 encrypted_extensions=Handshake,
                 certificate=Handshake,
                 cert_verify=Handshake,
                 server_finished=Handshake
-            )
+            ))
             bodylen = 2
-        case ProverMsgType.HASH_1 | ProverMsgType.HASH_4 | ProverMsgType.COMMITMENT | ProverMsgType.CLIENT_RANDOM | ProverMsgType.PROOF:
-            bodyspec = Raw
+        case ProverMsgType.HASH_1 | ProverMsgType.HASH_4:
+            bodyspec = Sequence(Struct(hash = Raw))
+        case ProverMsgType.COMMITMENT | ProverMsgType.CLIENT_RANDOM | ProverMsgType.PROOF:
+            bodyspec = Struct(val = Raw)
         case ProverMsgType.DH_SHARES:
-            bodyspec = Raw # todo
+            bodyspec = DHShares
         case _:
-            raise ParseError(f'unsupported message type {type}')
+            raise ParseError(f'unsupported message type {typ}')
     return Bounded(bodylen, bodyspec)
 
-def _verifier_msg_spec(type):
+def _verifier_msg_spec(typ):
     bodylen = 1
-    match type:
+    match typ:
         case VerifierMsgType.DH_SHARE_PHASE_1 | VerifierMsgType.DH_SECRET_PHASE_2:
-            bodyspec = Raw
+            return DHShares
         case VerifierMsgType.HANDSHAKE_KEYS:
-            bodyspec = Struct(chts = Raw, shts = Raw)
+            bodyspec = Sequence(Struct(chts = Raw, shts = Raw))
         case VerifierMsgType.APPLICATION_KEYS:
-            bodyspec = Struct(cats = Raw, sats = Raw)
+            bodyspec = Sequence(Struct(cats = Raw, sats = Raw))
         case VerifierMsgType.DH_SECRET_PHASE_2:
             bodyspec = Sequence(Struct(secret = Raw))
         case _:
-            raise ParseError(f'unsupported message type {type}')
+            raise ParseError(f'unsupported message type {typ}')
     return Bounded(bodylen, bodyspec)
 
 ProverMsg = Select(
@@ -71,3 +122,4 @@ VerifierMsg = Select(
     type = VerifierMsgType,
     body = _verifier_msg_spec
 )
+

@@ -4,11 +4,11 @@ This should probably be better integrated with the Connection code in tls_record
 import socket
 from abc import ABC, abstractmethod
 
+from proof_common import *
 from proof_spec import ProverMsg, VerifierMsg
 from spec import force_write, UnpackError
 from tls_client import Client
 from tls_common import *
-from proof_common import *
 
 
 class MsgWriter(ABC):
@@ -19,7 +19,7 @@ class MsgWriter(ABC):
         raw = self._get_raw(typ, payload)
         assert raw is not None
         force_write(self._out_file, raw)
-        logger.info(f'sent message: {raw}')
+        logger.info(f'sent message to {self._recipient}: {raw}')
 
     @abstractmethod
     def _get_raw(self, type, payload):
@@ -29,8 +29,8 @@ class MsgReader(ABC):
     def __init__(self, in_file):
         self._in_file = in_file
 
-    def recv_msg(self, typ):
-        message = self._read_object(typ)
+    def recv_msg(self):
+        message = self._read_object(self._msgtype)
         return message
 
     @abstractmethod
@@ -39,16 +39,28 @@ class MsgReader(ABC):
 
 class ProverMsgWriter(MsgWriter):
     """Writes prover messages to be sent to the verifier"""
+    def __init__(self, outfile):
+        super().__init__(outfile)
+        self._recipient = 'verifier'
+
     def _get_raw(self, type, payload):
         return ProverMsg.pack(type, payload)
 
 class VerifierMsgWriter(MsgWriter):
     """Writes prover messages to be sent to the verifier"""
+    def __init__(self, outfile):
+        super().__init__(outfile)
+        self._recipient = 'prover'
+
     def _get_raw(self, type, payload):
         return VerifierMsg.pack(type, payload)
 
 class ProverMsgReader(MsgReader):
     """Reads messages sent by the prover, to be read by the verifier"""
+    def __init__(self, infile):
+        super().__init__(infile)
+        self._msgtype = ProverMsg
+
     def _read_object(self, type):
         try:
             return ProverMsg.unpack_from(self._in_file)
@@ -57,6 +69,10 @@ class ProverMsgReader(MsgReader):
 
 class VerifierMsgReader(MsgReader):
     """Reads messages sent by the verifier, to be read by the prover"""
+    def __init__(self, infile):
+        super().__init__(infile)
+        self._msgtype = VerifierMsg
+
     def _read_object(self, type):
         try:
             return VerifierMsg.unpack_from(self._in_file)
@@ -102,10 +118,10 @@ class ProverConnection:
         logger.info(f'sending {typ} message to verifier')
         self._writer.send_msg(typ, payload)
 
-    def recv_msg(self, typ):
+    def recv_msg(self):
         if not self._connected:
             raise VerifierError("can't send application data yet")
-        return self._reader.recv_msg(typ)
+        return self._reader.recv_msg()
 
 class VerifierConnection:
     """Manages connection to the verifier from the prover."""
@@ -165,55 +181,22 @@ class VerifierConnection:
         logger.info(f'sending {typ} message to prover')
         self._writer.send_msg(typ, payload)
 
-    def recv_msg(self, typ):
-        message = self._reader.recv_msg(typ)
+    def recv_msg(self):
+        message = self._reader.recv_msg()
         if not self._connected:
             self._connected = True
         return message
 
-
-class ServerConnection:
-    """Manages connection to a single server from the prover."""
-    def __init__(self, serverID):
-        self._server_id = serverID
-        self._host = serverID.hostname
-        self._port = serverID.port
-        self._client = Client.build(self._host)
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._connected = False
-
-    def __del__(self):
-        """Fallback way to close the socket. The expected use is to close the connection manually when it's no
-        longer needed. If that doesn't happen, this closes the socket when the object is deleted."""
-        self.close()
-
-    def close(self):
-        self._sock.close()
-
-    @property
-    def tickets(self):
-        return self._client.tickets
-
-    def connect(self):
-        if self._connected:
-            raise VerifierError("already connected, can't connect again")
+def obtain_tickets(server_id):
+    host = server_id.hostname
+    port = server_id.port
+    client = Client.build(host)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         try:
-            self._sock.connect((self._host, self._port))
+            sock.connect((host, port))
         except ConnectionRefusedError:
-            raise VerifierError(f"couldn't connect to the server on {self._host}:{self:_port}. Did you start the server?")
-        self._connected = True
-        logger.info(f'connected to server on port {self._port}')
-
-    def obtain_ticket(self):
-        if not self._connected:
-            self.connect()
-        self._client.connect_socket(self._sock) # Does handshake but doesn't process tickets
-        try:
-            self._client._rreader.fetch() # Fetch first ticket
-            received_ticket = True
-        except socket.timeout:
-            received_ticket = False
-        self._sock.close()
-        if not received_ticket or len(self.tickets) == 0:
-            raise ProverError('no tickets received from server {self.serverID.to_string()}')
-        logger.info('obtained a ticket')
+            raise ProverError(f"couldn't connect to the server on {host}:{port}. Did you start the server?")
+        client.connect_socket(sock) # Does handshake but doesn't process tickets
+        client._rreader.fetch()  # Fetch first ticket
+        client.send(b'x')  # Just a dummy message
+    return client.tickets

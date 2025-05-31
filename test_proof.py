@@ -1,4 +1,6 @@
+import socket
 import threading
+from io import StringIO
 from random import Random
 from time import sleep
 
@@ -6,7 +8,8 @@ from https_server import HttpHandler
 from prover import HttpsProver
 from tls_common import *
 from tls_crypto import gen_server_secrets
-from tls_server import start_server, ServerID
+from tls_keycalc import ServerTicketer
+from tls_server import start_server, ServerID, Server, server_thread_info, _ThreadLogFilter, _ServerThread
 from verifier import HttpsVerifier
 
 class ProofTest:
@@ -32,6 +35,7 @@ class ProofTest:
         for thread in self.server_threads:
             thread.join()
 
+
     def start_servers(self):
         port = self.min_port
         for i in range(num_servers):
@@ -40,8 +44,9 @@ class ProofTest:
             cert_pubkey = server_secret.cert.public_key
             ech_pubkeys = [ech.public_key for ech in server_secret.eches]
             t = threading.Thread(
-                target=start_server,
-                args=(HttpHandler(), self.hostname, port, server_secret, self.rseed+i,),
+                name=f"server {i}",
+                target=start_test_server,
+                args=(HttpHandler(), self.hostname, port, server_secret, 2, self.rseed+i,),
                 daemon=True
             )
             self.server_threads.append(t)
@@ -50,14 +55,13 @@ class ProofTest:
             logger.info(f'server opened on port {port}')
             self.server_ids.append(ServerID(self.hostname, port, cert_pubkey, ech_pubkeys))
             port += 1
-            break
 
 
 
     def start_prover(self):
         self.prover = HttpsProver(self.server_ids, 0, None) # TODO: these shouldn't be hardcoded
 
-        self.prover_thread = threading.Thread(name='p',
+        self.prover_thread = threading.Thread(name='prover',
                                          target = self.prover.run,
                                          daemon=True
         )
@@ -74,6 +78,27 @@ class ProofTest:
         verifier = HttpsVerifier(self.server_ids, self.prover_host, self.prover_port)
         verifier.run()
 
+def start_test_server(handler, hostname='localhost', port=0, server_secrets=None, max_connections=1, rseed=None):
+    """Starts a temporary server that handles a fixed number of connections and then kills itself"""
+    if server_secrets is None:
+        logger.info('generating new self-signed server cert and ECH config')
+        server_secrets = gen_server_secrets(hostname)
+
+    ticketer = ServerTicketer()
+
+    with socket.create_server((hostname, port)) as ssock:
+        for i in range(max_connections):
+            logger.info(f'listening for connection to {hostname} on port {port}')
+            sock, addr = ssock.accept()
+            st = _ServerThread(handler, server_secrets, ticketer, rseed)
+            tname = f'{threading.current_thread().name} conn {i+1}'
+            sthread = threading.Thread(name=tname, target=st, args=(sock, addr,))
+            logger.info(f'launching new thread to handle client connection')
+            sthread.start()
+            if rseed is not None:
+                rseed += 1
+
+        logger.info('processed maximum number of connections, shutting down')
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO,
@@ -84,4 +109,4 @@ if __name__ == '__main__':
     test = ProofTest(num_servers, rseed=rseed)
     test.run()
     for x in test.server_ids:
-        print(x)
+        print('server id:', x)

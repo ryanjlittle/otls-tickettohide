@@ -5,10 +5,14 @@ interaction protocol and the predicate to be verified on the response.
 
 from abc import ABC, abstractmethod
 from enum import IntEnum
+from random import Random
 
 from proof_connections import ProverConnection
+from proof_crypto import VerifierCrypto
 from proof_spec import VerifierMsgType
+from tls13_spec import CipherSuite, NamedGroup
 from tls_common import *
+from tls_crypto import get_kex_alg
 
 
 class VerifierState(IntEnum):
@@ -30,16 +34,25 @@ class VerifierState(IntEnum):
         except ValueError:
             raise StopIteration('no next state')
 
+
 class Verifier(ABC):
-    def __init__(self, serverIDs, prover_host, prover_port, rseed=None):
-        self._serverIDs = serverIDs
-        self._rseed = rseed
-        self._state = VerifierState.INIT
+    def __init__(self, server_ids, prover_host, prover_port, ciphersuite=CipherSuite.TLS_AES_128_GCM_SHA256, group=NamedGroup.X25519, rseed=None):
+        self._serverIDs = server_ids
         self._prover_host = prover_host
         self._prover_port = prover_port
-        self._prover_conn = ProverConnection(self._prover_host, self._prover_port)
+        self._ciphersuite = ciphersuite
+        self._group = group
+        self._rgen = Random(rseed)
+        self._num_servers = len(server_ids)
 
-        self._handler = {
+        self._prover_conn = ProverConnection(self._prover_host, self._prover_port)
+        self._crypto_manager = VerifierCrypto(self._num_servers, ciphersuite, group, self._rgen)
+
+        self._state = VerifierState.INIT
+
+    @property
+    def handler(self):
+        return {
             VerifierState.INIT: self._connect,
             VerifierState.CONNECTED: self._send_dh_phase_1,
             VerifierState.WAIT_HASH_1 : self._process_hash_1,
@@ -62,9 +75,8 @@ class Verifier(ABC):
 
     def _send_dh_phase_1(self):
         assert self._state == VerifierState.CONNECTED
-        # TODO: this is just a dummy message now
-        dh_share = b'DH'*16
-        self._prover_conn.send_msg(VerifierMsgType.DH_SHARE_PHASE_1, dh_share)
+        self._crypto_manager.gen_secrets()
+        self._prover_conn.send_msg(VerifierMsgType.DH_SHARE_PHASE_1, self._crypto_manager.dh_shares)
         self._increment_state()
 
     def _process_hash_1(self):
@@ -90,7 +102,7 @@ class Verifier(ABC):
     def run(self):
         assert self._state == VerifierState.INIT
         while self._state < VerifierState.DONE:
-            self._handler[self._state]()
+            self.handler[self._state]()
         self._close_all()
         logger.info('verifier finished')
 
