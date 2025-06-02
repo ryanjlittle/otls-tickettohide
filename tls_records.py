@@ -38,13 +38,15 @@ class RecordReader:
 
         (typ,vers), payload = record
         logger.info(f'Fetched a length-{len(payload)} record of type {typ}')
-        wrapped = False
+        return self._unwrap_record(record)
+
+    def _unwrap_record(self, record):
+        (typ,vers), payload = record
         padding = 0
 
         if typ == ContentType.APPLICATION_DATA:
             if self._unwrapper is None:
                 raise TlsError("got APPLICATION_DATA before setting encryption keys")
-            wrapped = True
             header = RecordHeader.pack(typ, vers, len(payload))
             ptext = self._unwrapper.decrypt(payload, header)
             typ, payload, padding = InnerPlaintext.unpack(ptext)
