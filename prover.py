@@ -123,11 +123,12 @@ class Prover(ABC):
             client.set_kex_share(share)
 
         with ThreadPoolExecutor(thread_name_prefix='prover') as executor:
-            for client in self._clients:
-                executor.submit(client.send_and_recv_hellos)
+            futures = [executor.submit(client.send_and_recv_hellos) for client in self._clients]
+            for f in futures:
+                f.result()
 
         # TODO get hashes and send them to the verifier
-        #hash_1s = [client.hash_1 for client in self._clients]
+        transcripts = [client.get_encrypted_server_msgs() for client in self._clients]
 
         self._increment_state()
 

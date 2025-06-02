@@ -5,9 +5,10 @@ from random import Random
 from secrets import SystemRandom
 
 from proof_common import VerifierError, ProverError
+from proof_connections import ProverRecordReader
 from spec import kwdict
 from tls13_spec import HandshakeType, PskKeyExchangeMode, ExtensionType, Version, \
-    ClientExtension, ECHClientHelloType, HpkeKdfId, HpkeAeadId, Handshake, ClientState, ContentType
+    ClientExtension, ECHClientHelloType, HpkeKdfId, HpkeAeadId, Handshake, ClientState, ContentType, Record
 from tls_client import ClientHandshake, ClientSecrets, Client
 from tls_common import TlsError, TlsTODO, logger
 from tls_crypto import get_kex_alg, DEFAULT_KEX_GROUPS, DEFAULT_SIGNATURE_SCHEMES, DEFAULT_CIPHER_SUITES, get_hash_alg, \
@@ -114,7 +115,7 @@ class ProverClientPhase1:
 
         rfile = self._sock.makefile('rb')
         wfile = self._sock.makefile('wb')
-        self._rreader = RecordReader(rfile, self._transcript, self._app_data_in)
+        self._rreader = ProverRecordReader(rfile, self._transcript, self._app_data_in)
         self._rwriter = RecordWriter(wfile, self._transcript)
 
         self._rreader.hs_buffer = HandshakeBuffer(self._handshake)
@@ -137,11 +138,19 @@ class ProverClientPhase1:
             raise ProverError('key exchange share not provided')
         self.connect()
         self._handshake.send_hello()
-        self._rreader.fetch() # get server hello
-        self._rreader.fetch() # get change cipher spec
-        # TODO: need to make a way for reader to fetch messages up to server finished without decrypting them immediately.
-        # make an outer buffer that collects messages before feeding them into the record reader.
 
+        # get server hello and change cipher spec
+        self._rreader.fetch()
+        self._rreader.fetch()
+
+        # get encrypted extensions, cert, cert verify, and server finished
+        self._rreader.buffer_encrypted_records(4)
+
+    def get_encrypted_server_msgs(self):
+        if len(self._rreader.buffered_records) == 0:
+            raise ProverError('server messages not yet received')
+        server_hello = self._transcript.records[2]
+        return [server_hello] + self._rreader.buffered_records
 
 class ProverHandshakePhase1(ClientHandshake):
     """Modified TLS client for the prover"""

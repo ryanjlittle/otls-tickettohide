@@ -7,8 +7,10 @@ from abc import ABC, abstractmethod
 from proof_common import *
 from proof_spec import ProverMsg, VerifierMsg
 from spec import force_write, UnpackError
+from tls13_spec import Record, ContentType, RecordHeader, InnerPlaintext
 from tls_client import Client
 from tls_common import *
+from tls_records import RecordReader
 
 
 class MsgWriter(ABC):
@@ -186,6 +188,50 @@ class VerifierConnection:
         if not self._connected:
             self._connected = True
         return message
+    
+class ProverRecordReader(RecordReader):
+    """A record reader that can buffer encrypted records without immediately decrypting them"""
+
+    def __init__(self, file, transcript, app_data_buffer):
+        super().__init__(file, transcript, app_data_buffer)
+        self.buffered_records = []
+    
+    def buffer_encrypted_record(self):
+        logger.info('trying to fetch an encrypted record from the incoming stream')
+        try:
+            record = Record.unpack_from(self._file)
+        except (UnpackError, EOFError) as e:
+            raise TlsError("error unpacking record from server") from e
+
+        (typ,vers), payload = record
+        logger.info(f'Fetched a length-{len(payload)} record of type {typ}')
+        self.buffered_records.append(record)
+
+    def buffer_encrypted_records(self, num_records):
+        for _ in range(num_records):
+            self.buffer_encrypted_record()
+    
+    def process_buffered_records(self):
+        while len(self.buffered_records) > 0:
+            record = self.buffered_records.pop(0)
+            typ, payload = self._unwrap_record(record)
+
+            match typ:
+                case ContentType.CHANGE_CIPHER_SPEC:
+                    pass  # ignore these ones
+                case ContentType.ALERT:
+                    raise TlsError(f"Received ALERT: {payload}")
+                case ContentType.HANDSHAKE:
+                    self.hs_buffer.add(payload)
+                case ContentType.APPLICATION_DATA:
+                    self._app_data_buffer.add(payload)
+                case _:
+                    raise TlsError(f"Unexpected message type {typ} received")
+    
+    def get_next_record(self):
+        if len(self.buffered_records) > 0:
+            logger.warning('attempting to get new encrypted record when buffer is not empty')
+        return super().get_next_record()
 
 def obtain_tickets(server_id):
     host = server_id.hostname
