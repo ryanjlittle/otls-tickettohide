@@ -129,12 +129,20 @@ class FixedSize(Spec):
         assert packed_size >= 0, "packed_size must be a nonnegative integer"
         self._packed_size = packed_size
 
+    def _pack(self, obj):
+        assert isinstance(obj, bytes)
+        assert len(obj) == self._packed_size
+        return obj
+
     def _unpack_from(self, src):
         try:
             raw = force_read(src, self._packed_size)
         except ValueError as e:
             raise ParseError() from e
         return self._unpack(raw)
+
+    def _unpack(self, raw):
+        return raw
 
 
 class Integer(FixedSize):

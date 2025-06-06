@@ -6,7 +6,7 @@ from secrets import SystemRandom
 
 from proof_common import VerifierError, ProverError
 from proof_connections import ProverRecordReader
-from spec import kwdict
+from spec import kwdict, Raw
 from tls13_spec import HandshakeType, PskKeyExchangeMode, ExtensionType, Version, \
     ClientExtension, ECHClientHelloType, HpkeKdfId, HpkeAeadId, Handshake, ClientState, ContentType, Record
 from tls_client import ClientHandshake, ClientSecrets, Client
@@ -14,7 +14,7 @@ from tls_common import TlsError, TlsTODO, logger
 from tls_crypto import get_kex_alg, DEFAULT_KEX_GROUPS, DEFAULT_SIGNATURE_SCHEMES, DEFAULT_CIPHER_SUITES, get_hash_alg, \
     get_cipher_alg
 from tls_keycalc import KeyCalc, HandshakeTranscript
-from tls_records import HandshakeBuffer, RecordWriter, RecordReader, RecordTranscript, DataBuffer
+from tls_records import HandshakeBuffer, RecordWriter, RecordReader, RecordTranscript, DataBuffer, Connection
 
 
 class VerifierCrypto:
@@ -26,14 +26,13 @@ class VerifierCrypto:
         self._rgen = rgen
 
         self._kex = get_kex_alg(group)
-        self._kc = []
+        self._key_calcs = []
 
         self._dh_secrets = []
         self._twopc_dh_secret = None
         self.dh_shares = []
         self._dh_outputs = []
         self.twopc_dh_share = None
-        self._dh_outputs = None
 
         self.hs_keys = []
         self.app_keys = []
@@ -54,25 +53,35 @@ class VerifierCrypto:
         assert len(server_shares) == self._num_servers
         self._dh_outputs = [self._kex.exchange(priv, pub) for (priv,pub) in zip(self._dh_secrets, server_shares)]
 
-    def compute_application_keys(self, hashes):
+    def compute_handshake_keys(self, hashes):
         if len(self._dh_outputs) == 0:
             raise VerifierError('need to run key exchange first')
         if len(self._key_calcs) > 0:
-            raise VerifierError('already computed application keys')
+            raise VerifierError('already computed handshake keys')
         assert len(hashes) == self._num_servers
-        app_keys = []
+        hs_keys = []
         for i, h in enumerate(hashes):
             trans = PartialHandshakeTranscript()
-            trans.set_hash(HandshakeType.SERVER_HELLO, h)
             key_calc = KeyCalc(trans)
             key_calc.cipher_suite = self._ciphersuite
             key_calc.psk = None
+            trans.set_hash(HandshakeType.SERVER_HELLO, h)
             key_calc.kex_secret = self._dh_outputs[i]
             self._key_calcs.append(key_calc)
-            app_keys.append((key_calc.client_handshake_traffic_secret, key_calc.server_handshake_traffic_secret))
+            hs_keys.append((key_calc.client_handshake_traffic_secret, key_calc.server_handshake_traffic_secret))
+        return hs_keys
+
+    def compute_application_keys(self, hashes):
+        if len(self._key_calcs) == 0:
+            raise VerifierError('need to compute handshake keys first')
+
+        app_keys = []
+        for key_calc, h in zip(self._key_calcs, hashes):
+            key_calc._hs_trans.set_hash(HandshakeType.FINISHED, h)
+            app_keys.append((key_calc.client_application_traffic_secret, key_calc.server_application_traffic_secret))
         return app_keys
 
-class ProverClientPhase1:
+class ProverClientPhase1(Connection):
     """Manages connection to a single TLS server from the prover."""
     def __init__(self, server_id, ciphersuite, group, rseed=None):
 
@@ -83,7 +92,6 @@ class ProverClientPhase1:
 
         self._host = server_id.hostname
         self._port = server_id.port
-        self._client = Client.build(self._host)
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._transcript = RecordTranscript(None)
         self._app_data_in = DataBuffer()
@@ -100,10 +108,6 @@ class ProverClientPhase1:
 
     def close(self):
         self._sock.close()
-
-    @property
-    def tickets(self):
-        return self._client.tickets
 
     def connect(self):
         if self._connected:
@@ -146,11 +150,35 @@ class ProverClientPhase1:
         # get encrypted extensions, cert, cert verify, and server finished
         self._rreader.buffer_encrypted_records(4)
 
+    def send_client_finished(self):
+        self._handshake.send_finished()
+
     def get_encrypted_server_msgs(self):
         if len(self._rreader.buffered_records) == 0:
             raise ProverError('server messages not yet received')
         server_hello = self._transcript.records[2]
-        return [server_hello] + self._rreader.buffered_records
+        return [Record.unpack(server_hello.raw)] + self._rreader.buffered_records
+
+    def get_hash1(self):
+        return self._handshake._hs_trans[HandshakeType.SERVER_HELLO, False]
+
+    def get_hash4(self):
+        return self._handshake._hs_trans[HandshakeType.FINISHED, False]
+
+    def get_hash5(self):
+        return self._handshake._hs_trans[HandshakeType.FINISHED, True]
+
+    def set_handshake_secrets(self, chts, shts):
+        self._handshake.set_handshake_secrets(chts, shts)
+
+    def set_application_secrets(self, cats, sats):
+        self._handshake.set_application_secrets(cats, sats)
+
+    def process_ticket(self):
+        self._handshake._rreader.fetch()
+        if len(self._handshake.tickets) == 0:
+            raise ProverError('did not receive any tickets')
+        self.tickets = self._handshake.tickets
 
 class ProverHandshakePhase1(ClientHandshake):
     """Modified TLS client for the prover"""
@@ -169,21 +197,26 @@ class ProverHandshakePhase1(ClientHandshake):
         self._received_hs_secrets = False
         self._received_app_secrets = False
 
-    def set_handshake_secrets(self, shts, chts):
+    def set_handshake_secrets(self, chts, shts):
         if self._received_hs_secrets:
             raise ProverError('handshake secrets already set')
+        self._received_hs_secrets = True
         self._shts = shts
         self._chts = chts
         self._rreader.rekey(self._cipher, self._hash_alg, shts)
-        self._received_hs_secrets = True
+        self._key_calc.server_handshake_traffic_secret = shts
+        self._key_calc.client_handshake_traffic_secret = chts
+        self._rreader.process_buffered_records()
 
-    def set_application_secrets(self, sats, cats):
+    def set_application_secrets(self, cats, sats):
         if self._received_app_secrets:
             raise ProverError('application secrets already set')
         self._sats = sats
         self._cats = cats
         self._rreader.rekey(self._cipher, self._hash_alg, sats)
         self._rwriter.rekey(self._cipher, self._hash_alg, cats)
+        self._key_calc.server_application_traffic_secret = sats
+        self._key_calc.client_application_traffic_secret = cats
         self._received_app_secrets = True
 
     def _process_server_hello(self, body):
@@ -233,7 +266,8 @@ class ProverHandshakePhase1(ClientHandshake):
             self._cipher = get_cipher_alg(self._cipher_suite)
         except ValueError as e:
             raise TlsError(f"cipher suite {self._cipher_suite} not supported") from e
-
+        self._key_calc.cipher_suite = self._cipher_suite
+        self._key_calc.psk = self._psk
 
         logger.info(f"Finished processing server hello.")
         self._state = ClientState.WAIT_EE
@@ -258,13 +292,18 @@ class ProverHandshakePhase1(ClientHandshake):
 
         self._rwriter.rekey(self._cipher, self._hash_alg, self._chts)
 
+    def _process_ticket(self, body):
+        self.tickets.append(body)
+        logger.info('got and stored a reconnect ticket')
+
+    def send_finished(self):
+        if not self._received_hs_secrets:
+            raise ProverError('need to get handshake secrets from verifier to process encrypted handshake messages')
         client_finished = Handshake.pack(
             typ  = HandshakeType.FINISHED,
             body = self._key_calc.client_finished_verify,
         )
         self._send_hs_msg(typ=HandshakeType.FINISHED, raw=client_finished)
-        logger.info(f"Sent CLIENT FINISHED. Awaiting application secrets from verifier")
-
         self._state = ClientState.CONNECTED
 
 class ProverHandshakePhase2(ClientHandshake):
@@ -273,15 +312,14 @@ class ProverHandshakePhase2(ClientHandshake):
 class PartialHandshakeTranscript(HandshakeTranscript):
     """Helper class to compute key derivation while only learning partial transcript hashes, not the full transcript"""
     def set_hash(self, typ, hash_val):
-        self._lookup[typ] = hash_val
-
-    def hash_alg(self):
-        """stub: this method isn't needed"""
-        pass
-
-    def hash_alg(self, ha):
-        """stub: this method isn't needed"""
-        pass
+        match typ:
+            case HandshakeType.SERVER_HELLO:
+                self._lookup[typ, False] = hash_val
+            case HandshakeType.FINISHED:
+                self._lookup[typ, False] = hash_val
+            case _:
+                raise ValueError('adding unexpected hash value')
+        self._history.append(hash_val)
 
     def add(self, typ, from_client, data):
         """stub: this method isn't needed"""

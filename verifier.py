@@ -7,10 +7,11 @@ from abc import ABC, abstractmethod
 from enum import IntEnum
 from random import Random
 
+from proof_common import VerifierError
 from proof_connections import ProverConnection
 from proof_crypto import VerifierCrypto
-from proof_spec import VerifierMsgType
-from tls13_spec import CipherSuite, NamedGroup
+from proof_spec import VerifierMsgType, ProverMsgType
+from tls13_spec import CipherSuite, NamedGroup, Handshake, ExtensionType
 from tls_common import *
 from tls_crypto import get_kex_alg
 
@@ -81,10 +82,41 @@ class Verifier(ABC):
 
     def _process_hash_1(self):
         assert self._state == VerifierState.WAIT_HASH_1
+        tx_msg = self._prover_conn.recv_msg()
+        if tx_msg.typ != ProverMsgType.SERVER_HANDSHAKE_TX:
+            raise VerifierError('unexpected message received')
+        self._transcripts = tx_msg.body
+        self._kex_shares = [self._extract_kex_share(msgs[0]) for msgs in self._transcripts]
+
+        self._crypto_manager.exchange_all(self._kex_shares)
+
+        hash_msg = self._prover_conn.recv_msg()
+        if hash_msg.typ != ProverMsgType.HASH_1:
+            raise VerifierError('unexpected message received')
+        hashes = hash_msg.body
+
+        hs_secrets = self._crypto_manager.compute_handshake_keys(hashes)
+        self._prover_conn.send_msg(VerifierMsgType.HANDSHAKE_KEYS, hs_secrets)
+
         self._increment_state()
+
+    def _extract_kex_share(self, hello):
+        """we validate the entire transcript later, so no need to validate anything here."""
+        body = Handshake.unpack(hello.payload).body
+        kex_extension = body.extensions[-1]
+        return kex_extension.data.pubkey
 
     def _process_hash_4(self):
         assert  self._state == VerifierState.WAIT_HASH_4
+
+        msg = self._prover_conn.recv_msg()
+        if msg.typ != ProverMsgType.HASH_4:
+            raise VerifierError('unexpected message received')
+        hashes = msg.body
+
+        app_secrets = self._crypto_manager.compute_application_keys(hashes)
+        self._prover_conn.send_msg(VerifierMsgType.APPLICATION_KEYS, app_secrets)
+
         self._increment_state()
 
     def _2pc_hkdf(self):

@@ -24,7 +24,7 @@ class MsgWriter(ABC):
         logger.info(f'sent message to {self._recipient}: {raw}')
 
     @abstractmethod
-    def _get_raw(self, type, payload):
+    def _get_raw(self, typ, payload):
         pass
 
 class MsgReader(ABC):
@@ -32,11 +32,13 @@ class MsgReader(ABC):
         self._in_file = in_file
 
     def recv_msg(self):
-        message = self._read_object(self._msgtype)
+        message = self._read_object()
+        typ, body = message
+        logger.info(f'received message of type {typ} from {self._sender}')
         return message
 
     @abstractmethod
-    def _read_object(self, typ):
+    def _read_object(self):
         pass
 
 class ProverMsgWriter(MsgWriter):
@@ -45,8 +47,8 @@ class ProverMsgWriter(MsgWriter):
         super().__init__(outfile)
         self._recipient = 'verifier'
 
-    def _get_raw(self, type, payload):
-        return ProverMsg.pack(type, payload)
+    def _get_raw(self, typ, payload):
+        return ProverMsg.pack(typ, payload)
 
 class VerifierMsgWriter(MsgWriter):
     """Writes prover messages to be sent to the verifier"""
@@ -54,16 +56,17 @@ class VerifierMsgWriter(MsgWriter):
         super().__init__(outfile)
         self._recipient = 'prover'
 
-    def _get_raw(self, type, payload):
-        return VerifierMsg.pack(type, payload)
+    def _get_raw(self, typ, payload):
+        return VerifierMsg.pack(typ, payload)
 
 class ProverMsgReader(MsgReader):
     """Reads messages sent by the prover, to be read by the verifier"""
     def __init__(self, infile):
         super().__init__(infile)
         self._msgtype = ProverMsg
+        self._sender = 'prover'
 
-    def _read_object(self, type):
+    def _read_object(self):
         try:
             return ProverMsg.unpack_from(self._in_file)
         except (UnpackError, EOFError) as e:
@@ -74,8 +77,9 @@ class VerifierMsgReader(MsgReader):
     def __init__(self, infile):
         super().__init__(infile)
         self._msgtype = VerifierMsg
+        self._sender = 'verifier'
 
-    def _read_object(self, type):
+    def _read_object(self):
         try:
             return VerifierMsg.unpack_from(self._in_file)
         except (UnpackError, EOFError) as e:
@@ -117,7 +121,7 @@ class ProverConnection:
     def send_msg(self, typ, payload):
         if not self._connected:
             raise VerifierError("can't send application data yet")
-        logger.info(f'sending {typ} message to verifier')
+        logger.info(f'sending {typ} message to prover')
         self._writer.send_msg(typ, payload)
 
     def recv_msg(self):
@@ -180,7 +184,7 @@ class VerifierConnection:
     def send_msg(self, typ, payload):
         if not self._connected:
             raise VerifierError("can't send application data yet")
-        logger.info(f'sending {typ} message to prover')
+        logger.info(f'sending {typ} message to verifier')
         self._writer.send_msg(typ, payload)
 
     def recv_msg(self):
@@ -213,8 +217,9 @@ class ProverRecordReader(RecordReader):
     
     def process_buffered_records(self):
         while len(self.buffered_records) > 0:
-            record = self.buffered_records.pop(0)
+            record = self.buffered_records[0]
             typ, payload = self._unwrap_record(record)
+            logger.info(f'decrypting buffered record of length {len(payload)}')
 
             match typ:
                 case ContentType.CHANGE_CIPHER_SPEC:
@@ -222,12 +227,18 @@ class ProverRecordReader(RecordReader):
                 case ContentType.ALERT:
                     raise TlsError(f"Received ALERT: {payload}")
                 case ContentType.HANDSHAKE:
-                    self.hs_buffer.add(payload)
+                    try:
+                        # If we can't decrypt the message, leave it in the buffer and try later
+                        self.hs_buffer.add(payload)
+                    except ProverError:
+                        break
                 case ContentType.APPLICATION_DATA:
                     self._app_data_buffer.add(payload)
                 case _:
                     raise TlsError(f"Unexpected message type {typ} received")
-    
+
+            self.buffered_records.pop(0)
+
     def get_next_record(self):
         if len(self.buffered_records) > 0:
             logger.warning('attempting to get new encrypted record when buffer is not empty')

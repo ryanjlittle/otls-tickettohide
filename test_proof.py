@@ -59,7 +59,7 @@ class ProofTest:
 
 
     def start_prover(self):
-        self.prover = HttpsProver(self.server_ids, 0, None) # TODO: these shouldn't be hardcoded
+        self.prover = HttpsProver(self.server_ids, 0, None, rseed=self.rseed) # TODO: these shouldn't be hardcoded
 
         self.prover_thread = threading.Thread(name='prover',
                                          target = self.prover.run,
@@ -75,7 +75,7 @@ class ProofTest:
 
 
     def start_verifier(self):
-        verifier = HttpsVerifier(self.server_ids, self.prover_host, self.prover_port)
+        verifier = HttpsVerifier(self.server_ids, self.prover_host, self.prover_port, rseed=self.rseed)
         verifier.run()
 
 def start_test_server(handler, hostname='localhost', port=0, server_secrets=None, max_connections=1, rseed=None):
@@ -104,7 +104,7 @@ if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO,
                         format='[%(threadName)s] %(message)s'
     )
-    num_servers = 1
+    num_servers = 3
     rseed = 0
     test = ProofTest(num_servers, rseed=rseed)
     test.run()

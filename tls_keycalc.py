@@ -145,6 +145,8 @@ class HandshakeTranscript:
     def __init__(self):
         self._hash_alg = None
         self._backlog = []
+        self._lookup = {}
+        self._history = []
 
     @property
     def hash_alg(self):
@@ -157,7 +159,6 @@ class HandshakeTranscript:
         self._hash_alg = ha
         self._running = self._hash_alg.hasher()
         self._history = [self._running.digest()]
-        self._lookup = {}
         for item in self._backlog:
             self.add(*item)
         del self._backlog

@@ -6,8 +6,8 @@ protocol, and don't depend on the format of TLS.
 
 from enum import IntEnum
 
-from spec import Struct, Bounded, Raw, Sequence, Select, ParseError, Spec, force_write, force_read
-from tls13_spec import Handshake, _FixedEnum
+from spec import Struct, Bounded, Raw, Sequence, Select, ParseError, Spec, force_write, force_read, FixedSize
+from tls13_spec import Handshake, _FixedEnum, Record
 
 
 class BoundedSequence(Spec):
@@ -57,7 +57,6 @@ class BoundedSequence(Spec):
             raise ParseError(f"could not read element in BoundedSequence") from e
         return result
 
-DHShares = BoundedSequence(1, 1, Raw)
 
 class ProverMsgType(IntEnum, metaclass=_FixedEnum, bytelen=1):
     SERVER_HANDSHAKE_TX = 1
@@ -80,20 +79,20 @@ def _prover_msg_spec(typ):
     bodylen = 1
     match typ:
         case ProverMsgType.SERVER_HANDSHAKE_TX:
-            bodyspec = Sequence(Struct(
-                server_hello=Handshake,
-                encrypted_extensions=Handshake,
-                certificate=Handshake,
-                cert_verify=Handshake,
-                server_finished=Handshake
-            ))
+            bodyspec = Sequence(Bounded(2, Struct(
+                server_hello=Record,
+                encrypted_extensions=Record,
+                certificate=Record,
+                cert_verify=Record,
+                server_finished=Record
+            )))
             bodylen = 2
         case ProverMsgType.HASH_1 | ProverMsgType.HASH_4:
-            bodyspec = Sequence(Struct(hash = Raw))
+            return BoundedSequence(1, 1, Raw)
         case ProverMsgType.COMMITMENT | ProverMsgType.CLIENT_RANDOM | ProverMsgType.PROOF:
             bodyspec = Struct(val = Raw)
         case ProverMsgType.DH_SHARES:
-            bodyspec = DHShares
+            bodyspec = BoundedSequence(1, 1, Raw)
         case _:
             raise ParseError(f'unsupported message type {typ}')
     return Bounded(bodylen, bodyspec)
@@ -102,11 +101,11 @@ def _verifier_msg_spec(typ):
     bodylen = 1
     match typ:
         case VerifierMsgType.DH_SHARE_PHASE_1 | VerifierMsgType.DH_SECRET_PHASE_2:
-            return DHShares
+            return BoundedSequence(1, 1, Raw)
         case VerifierMsgType.HANDSHAKE_KEYS:
-            bodyspec = Sequence(Struct(chts = Raw, shts = Raw))
+            bodyspec = Sequence(Struct(chts = FixedSize(32), shts = FixedSize(32)))
         case VerifierMsgType.APPLICATION_KEYS:
-            bodyspec = Sequence(Struct(cats = Raw, sats = Raw))
+            bodyspec = Sequence(Struct(cats = FixedSize(32), sats = FixedSize(32)))
         case VerifierMsgType.DH_SECRET_PHASE_2:
             bodyspec = Sequence(Struct(secret = Raw))
         case _:
@@ -114,12 +113,12 @@ def _verifier_msg_spec(typ):
     return Bounded(bodylen, bodyspec)
 
 ProverMsg = Select(
-    type = ProverMsgType,
+    typ = ProverMsgType,
     body = _prover_msg_spec
 )
 
 VerifierMsg = Select(
-    type = VerifierMsgType,
+    typ = VerifierMsgType,
     body = _verifier_msg_spec
 )
 
