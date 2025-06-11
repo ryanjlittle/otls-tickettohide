@@ -1,424 +1,828 @@
-"""Utilities to support translating network protocol specs into Python code.
-
-The main base class is `Spec`, which has `pack` and `unpack` methods (among others)
-to convert between byte-level representations (e.g. from a network socket)
-and Python objects (typically dicts and lists).
-"""
-
-
-from collections import namedtuple
+from typing import Self, BinaryIO, TextIO, get_args, Iterable, Protocol, Any, dataclass_transform, ClassVar, override
+from dataclasses import dataclass, field
+import dataclasses
+from abc import ABC, abstractmethod
 from io import BytesIO
-import pprint
+from sys import stdout
+from enum import IntEnum
+import functools
+from textwrap import dedent
+from util import pformat
 
+type Json = int | float | str | bool | None | list[Json] | dict[str, Json]
 
-class _ErrorVal:
-    def __repr__(self):
-        return '!!!! ERROR HERE !!!!'
-ERROR_VAL = _ErrorVal()
+ERROR_VAL = '!!! ERROR HERE !!!'
 
-class ParseError(ValueError):
-    def __init__(self, *args, partial = ERROR_VAL, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.partial = partial
-
+@dataclass
 class UnpackError(ValueError):
-    def __init__(self, what, partial):
-        super().__init__(
-            f"Error unpacking {what}.\n"
-            f"Partial result:\n"
-            f"{pformat(partial, byteslen=40)}")
-
-
-def jsonify(obj, byteslen=None):
-    if isinstance(obj, bytes):
-        if byteslen is not None and len(obj) > byteslen:
-            return f"{obj[:byteslen//2].hex()}...{obj[-byteslen//2:].hex()}"
-        else:
-            return obj.hex()
-    elif isinstance(obj, tuple):
-        if hasattr(obj, '_asdict'):
-            return jsonify(obj._asdict(), byteslen)
-        else:
-            return [jsonify(value, byteslen) for value in obj]
-    elif isinstance(obj, dict):
-        return {key: jsonify(value, byteslen) for key,value in obj.items()}
-    elif isinstance(obj, list):
-        return [jsonify(value, byteslen) for value in obj]
-    else:
-        return str(obj)
-
-def pp(obj, byteslen=32, **kwargs):
-    pprint.pp(jsonify(obj, byteslen), **kwargs)
-
-def pformat(obj, byteslen=32, **kwargs):
-    return pprint.pformat(jsonify(obj, byteslen), sort_dicts=False, **kwargs)
-
-
-class _NC:
-    pass
-NOT_CONST = _NC()
-
-
-def kwdict(**kwargs):
-    return kwargs
-
-
-def force_read(src, size):
-    got = src.read(size)
-    if len(got) != size:
-        raise (ValueError if len(got) else EOFError)(f"expected {size} bytes, got {len(got)} bytes {pformat(got)}")
-    return got
-
-
-def force_write(dest, raw):
-    written = dest.write(raw)
-    if written != len(raw):
-        raise BrokenPipeError(f'tried to write {len(raw)} bytes {pformat(raw)}, but only wrote {writen}')
-    dest.flush()
-
-
-class Spec:
-    _packed_size = None
-    _is_constant = False
-
-    def prepack(self, obj=None):
-        return obj
-
-    def pack(self, obj=None, *args, **kwargs):
-        return self._pack(self.prepack(obj, *args, **kwargs))
-
-    def _pack(self, obj):
-        raise NotImplementedError
-
-    def pack_to(self, dest, obj=None, *args, **kwargs):
-        self._pack_to(dest, self.prepack(obj, *args, **kwargs))
-
-    def _pack_to(self, dest, obj):
-        force_write(dest, self._pack(obj))
-
-    def unpack(self, raw):
-        if isinstance(raw, str):
-            raw = bytes.fromhex(raw)
-        try:
-            return self._unpack(raw)
-        except ParseError as e:
-            raise UnpackError(f"{len(raw)} bytes {pformat(raw)}",
-                               e.partial) from e
-
-    def _unpack(self, raw):
-        raise NotImplementedError
-
-    def unpack_from(self, src):
-        try:
-            return self._unpack_from(src)
-        except ParseError as e:
-            raise UnpackError("stream", e.partial) from e
-
-    def _unpack_from(self, src):
-        raise NotImplementedError
-
-    def const(self, obj):
-        return self if obj is NOT_CONST else Constant(obj, self.pack(obj))
-
-    def convert(self, other_spec, obj, *args, **kwargs):
-        return other_spec._unpack(self.pack(obj, *args, **kwargs))
-
-
-class FixedSize(Spec):
-    def __init__(self, packed_size):
-        assert packed_size >= 0, "packed_size must be a nonnegative integer"
-        self._packed_size = packed_size
-
-    def _unpack_from(self, src):
-        try:
-            raw = force_read(src, self._packed_size)
-        except ValueError as e:
-            raise ParseError() from e
-        return self._unpack(raw)
-
-
-class Integer(FixedSize):
-    def __init__(self, bytelen):
-        super().__init__(bytelen)
-
-    def _pack(self, number):
-        return number.to_bytes(self._packed_size)
-
-    def _unpack(self, raw):
-        return int.from_bytes(raw)
-
-
-class Constant(FixedSize):
-    _is_constant = True
-
-    def __init__(self, unpacked, packed):
-        super().__init__(len(packed))
-        self.unpacked = unpacked
-        self._packed = packed
-
-    def prepack(self, obj=None, *args, **kwargs):
-        if args or kwargs or (obj is not None and obj != self.unpacked):
-            raise ValueError(f"Trying to pack {obj} into constant {self.unpacked}")
-        return self.unpacked
-
-    def _pack(self, obj):
-        assert obj is self.unpacked
-        return self._packed
-
-    def _unpack(self, raw):
-        if raw != self._packed:
-            raise ParseError(f"Expected constant for {self.unpacked} but got {pformat(raw)}")
-        return self.unpacked
-
-
-class Padding(Constant):
-    def __init__(self, size):
-        super().__init__(None, b'\x00' * size)
-
-
-class VarSize(Spec):
-    def _pack(self, obj):
-        buf = BytesIO()
-        self._pack_to(buf, obj)
-        return buf.getvalue()
-
-    def _unpack(self, raw):
-        buf = BytesIO(raw)
-        obj = self._unpack_from(buf)
-        if buf.tell() != len(raw):
-            raise ParseError(f"too many bytes to unpack; got {len(raw)} bytes {pformat(raw)} but only needed {buf.tell()}")
-        return obj
-
-
-class Struct(VarSize):
-    def __init__(self, **members):
-        self._types = list(members.values())
-        self._is_constant = all(typ._is_constant for typ in self._types)
-        self.Tuple = namedtuple(
-            'Struct',
-            members.keys(),
-            defaults=([None] * len(self._types))
-        )
-
-    def prepack(self, obj=None, *args, **kwargs):
-        if args:
-            plain = self.Tuple(obj, *args, **kwargs)
-        elif obj is None:
-            plain = self.Tuple(**kwargs)
-        elif kwargs:
-            plain = self.Tuple(obj, **kwargs)
-        elif isinstance(obj, dict):
-            plain = self.Tuple(**obj)
-        else:
-            plain = self.Tuple(*obj)
-        return self.Tuple(*(typ.prepack(item) for (item,typ) in zip(plain, self._types)))
-
-    def _pack_to(self, dest, items):
-        for item, typ in zip(items, self._types):
-            typ._pack_to(dest, item)
-
-    def _unpack_from(self, src):
-        items = []
-        for typ in self._types:
-            try:
-                item = typ._unpack_from(src)
-            except EOFError as e:
-                msg = f"expected {len(self._types)} items but only got {len(items)}"
-                if items:
-                    items.append(ERROR_VAL)
-                    raise ParseError(msg, partial=self.Tuple(*items)) from e
-                else:
-                    raise
-            except ParseError as e:
-                items.append(e.partial)
-                e.partial = self.Tuple(*items)
-                raise
-            items.append(item)
-        return self.Tuple(*items)
-
-
-class Select(VarSize):
-    """A pair of fields, where the value of the first determines the second.
-    In specification, the type for the second field should be a function
-    which maps instances of the first type to types for the second field.
-    """
-    def __init__(self, **members):
-        assert len(members) == 2, "Select must be a pair of fields"
-        mit = iter(members.items())
-        name1, self._type1 = next(mit)
-        name2, self._t2fun = next(mit)
-        self.Tuple = namedtuple(
-            'Struct',
-            [name1, name2],
-            defaults = [None, None])
-
-    def prepack(self, obj=None, *args, **kwargs):
-        if args:
-            plain = self.Tuple(obj, *args, **kwargs)
-        elif obj is None:
-            plain = self.Tuple(**kwargs)
-        elif kwargs:
-            plain = self.Tuple(obj, **kwargs)
-        elif isinstance(obj, dict):
-            plain = self.Tuple(**obj)
-        else:
-            plain = self.Tuple(*obj)
-        val1 = self._type1.prepack(plain[0])
-        val2 = self._t2fun(val1).prepack(plain[1])
-        return self.Tuple(val1, val2)
-
-    def _pack_to(self, dest, items):
-        self._type1._pack_to(dest, items[0])
-        self._t2fun(items[0])._pack_to(dest, items[1])
-
-    def _unpack_from(self, src):
-        try:
-            val1 = self._type1._unpack_from(src)
-        except ParseError as e:
-            e.partial = self.Tuple(e.partial)
-            raise
-        try:
-            t2 = self._t2fun(val1)
-        except (ValueError, LookupError) as e:
-            raise ParseError("could not determine val2 type", partial=self.Tuple(val1, ERROR_VAL)) from e
-        try:
-            val2 = t2._unpack_from(src)
-        except ParseError as e:
-            e.partial = self.Tuple(val1, e.partial)
-            raise
-        except EOFError as e:
-            raise ParseError("missing second item", partial=self.Tuple(val1, ERROR_VAL)) from e
-        return self.Tuple(val1, val2)
-
-
-class SelectBounded:
-    """Helper class for Select to create the function from a size bound and key/value pairs."""
-    def __init__(self, size, lookups, allow_raw=True):
-        self._size = size
-        self._lookups = lookups
-        self._allow_raw = True
-
-    def __call__(self, val1):
-        return Bounded(self._size, self._lookups.get(val1, Raw))
-
-
-class Fill(Spec):
-    def __init__(self, char=b'\x00'):
-        self._char = char
-
-    def _pack(self, size):
-        return self._char * size
-
-    def _unpack(self, raw):
-        if raw != self._char * len(raw):
-            raise ParseError(f"fill character must be all {self._char} but got {raw.hex()}")
-        return len(raw)
-
-
-class _Raw(Spec):
-    def prepack(self, data):
-        if isinstance(data, str):
-            return bytes.fromhex(data)
-        else:
-            return data
-
-    def _pack(self, data):
-        assert isinstance(data, bytes)
-        return data
-
-    def _unpack(self, raw):
+    source: bytes|Json
+    description: str
+    partial: Json = ERROR_VAL
+
+    @override
+    def __str__(self) -> str:
+        return dedent(f"""\
+            Error unpacking {pformat(self.source, byteslen=40)}
+            {self.description}
+            Partial result:
+            {pformat(self.partial)}
+            """)
+
+    def above(self, source: bytes|Json, partial: Json) -> Self:
+        return type(self)(source, self.description, partial)
+
+@dataclass
+class LimitReader:
+    src: BinaryIO
+    limit: int|None = None
+    got: bytearray = field(default_factory=bytearray)
+
+    def read(self, size: int) -> bytes:
+        if self.limit is not None and self.limit < size:
+            limited = self.limit
+            self.read(limited)
+            raise UnpackError(self.got, f"tried to read {size} bytes but limit was {limited}")
+        raw = self.src.read(size)
+        self.got.extend(raw)
+        if len(raw) != size:
+            raise UnpackError(self.got, f"tried to read {size} bytes but only got {len(raw)}")
+        if self.limit is not None:
+            self.limit -= size
         return raw
 
-Raw = _Raw()
+    @classmethod
+    def from_raw(cls, raw: bytes) -> Self:
+        return cls(src = BytesIO(raw), limit = len(raw))
+
+    def assert_used_up(self) -> None:
+        if self.limit is None:
+            raise ValueError("can't check used_up when there is no limit")
+        elif self.limit != 0:
+            limited = self.limit
+            extra = self.read(limited)
+            raise UnpackError(self.got, f"extra bytes that should have been used up: {pformat(extra)}")
 
 
-class _String(Spec):
-    def _pack(self, obj):
-        return str(obj).encode('ascii')
+def force_write(dest: BinaryIO, data: bytes) -> None:
+    written = dest.write(data)
+    if written != len(data):
+        raise ValueError(f"Error trying to write {len(data)} bytes; only wrote {written}")
+    dest.flush()
 
-    def _unpack(self, raw):
-        try:
-            return raw.decode('ascii')
-        except ValueError as e:
-            raise ParseError() from e
+class Spec:
+    _CREATE_FROM: tuple[tuple[str, type[Any]], ...] | None = None
 
-String = _String()
+    def jsonify(self) -> Json:
+        raise NotImplementedError
 
+    @classmethod
+    def from_json(cls, obj: Json) -> Self:
+        raise NotImplementedError
 
-class Sequence(Spec):
-    def __init__(self, typ):
-        self._inner = typ
+    def packed_size(self) -> int:
+        return len(self.pack())
 
-    def prepack(self, obj, *args):
-        if args:
-            items = [obj] + args
-        else:
-            items = obj
-        return [self._inner.prepack(item) for item in items]
+    def pack(self) -> bytes:
+        raise NotImplementedError
 
-    def _pack(self, items):
-        return b''.join(self._inner.pack(item) for item in items)
-
-    def _unpack(self, raw):
-        stream = BytesIO(raw)
-        result = []
-        while stream.tell() < len(raw):
-            try:
-                item = self._inner._unpack_from(stream)
-            except ParseError as e:
-                result.append(e.partial)
-                e.partial = result
-                raise
-            result.append(item)
-        return result
-
-
-class Fix(FixedSize):
-    """Converts Unbounded to FixedSize with a static length."""
-
-    def __init__(self, size, inner):
-        super().__init__(size)
-        self._inner = inner
-
-    def prepack(self, obj=None, *args, **kwargs):
-        return self._inner.prepack(obj, *args, **kwargs)
-
-    def _pack(self, obj):
-        res = self._inner._pack(obj)
-        if len(res) != self._packed_size:
-            raise ValueError(f"packed size should be {self._packed_size}, but it is {len(res)}")
-        return res
-
-    def _unpack(self, raw):
-        if len(raw) != self._packed_size:
-            raise ParseError(f"expected {self._packed_size} bytes to unpack, got {len(raw)} bytes {pformat(raw)}")
-        return self._inner._unpack(raw)
-
-
-class Bounded(VarSize):
-    """Converts Unbounded to Varaible with a fixed-size length prefix."""
-
-    def __init__(self, lenlen, inner):
-        self._lenlen = lenlen
-        self._inner = inner
-
-    def prepack(self, obj=None, *args, **kwargs):
-        return self._inner.prepack(obj, *args, **kwargs)
-
-    def _pack_to(self, dest, obj):
-        raw = self._inner._pack(obj)
-        force_write(dest, len(raw).to_bytes(self._lenlen))
+    def pack_to(self, dest: BinaryIO) -> int:
+        raw = self.pack()
         force_write(dest, raw)
+        return len(raw)
 
-    def _unpack_from(self, src):
+    @classmethod
+    def unpack(cls, raw: bytes) -> Self:
+        raise NotImplementedError
+
+    @classmethod
+    def unpack_from(cls, src: LimitReader) -> Self:
+        raise NotImplementedError
+
+class _Wrapper[T: Spec](Spec):
+    _DATA_TYPE: type[T]
+
+    def __init__(self, data: T) -> None:
+        if not isinstance(data, self._DATA_TYPE):
+            raise ValueError("expected type {self._DATA_TYPE}, got {data}")
+        self._data = data
+
+    @property
+    def data(self) -> T:
+        return self._data
+
+    @override
+    def jsonify(self) -> Json:
+        return self.data.jsonify()
+
+    @override
+    @classmethod
+    def from_json(cls, obj: Json) -> Self:
+        return cls(data = cls._DATA_TYPE.from_json(obj))
+
+    @override
+    def packed_size(self) -> int:
+        return self.data.packed_size()
+
+    @override
+    def pack(self) -> bytes:
+        return self.data.pack()
+
+    @override
+    def pack_to(self, dest: BinaryIO) -> int:
+        return self.data.pack_to(dest)
+
+    @override
+    @classmethod
+    def unpack(cls, raw: bytes) -> Self:
+        return cls(data = cls._DATA_TYPE.unpack(raw))
+
+    @override
+    @classmethod
+    def unpack_from(cls, src: LimitReader) -> Self:
+        return cls(data=cls._DATA_TYPE.unpack_from(src))
+
+class _Fixed(Spec):
+    _BYTE_LENGTH: int
+
+    @override
+    def packed_size(self) -> int:
+        return self._BYTE_LENGTH
+
+    @override
+    @classmethod
+    def unpack_from(cls, src: LimitReader) -> Self:
+        return cls.unpack(src.read(cls._BYTE_LENGTH))
+
+class Empty(_Fixed):
+    _BYTE_LENGTH: int = 0
+    _CREATE_FROM = ()
+
+    @classmethod
+    def create(cls) -> Self:
+        return cls()
+
+    def uncreate(self) -> tuple[()]:
+        return ()
+
+    @override
+    def jsonify(self) -> Json:
+        return None
+
+    @override
+    @classmethod
+    def from_json(cls, obj: Json) -> Self:
+        if obj is not None:
+            raise UnpackError(obj, "Empty should be None")
+        return cls()
+
+    @override
+    def pack(self) -> bytes:
+        return b''
+
+    @override
+    def pack_to(self, dest: BinaryIO) -> int:
+        return 0
+
+    @override
+    @classmethod
+    def unpack(cls, raw: bytes) -> Self:
+        if len(raw):
+            raise UnpackError(raw, "Empty should be b''")
+        return cls()
+
+    @override
+    @classmethod
+    def unpack_from(cls, src: LimitReader) -> Self:
+        return cls()
+
+class Bool(_Fixed):
+    _BYTE_LENGTH = 1
+    _CREATE_FROM = (('value', bool),)
+
+    def __init__(self, value: bool) -> None:
+        self._value = value
+
+    @property
+    def value(self) -> bool:
+        return self._value
+
+    @classmethod
+    def create(cls, value: bool) -> Self:
+        return cls(value)
+
+    def uncreate(self) -> bool:
+        return self.value
+
+    @override
+    def jsonify(self) -> Json:
+        return self.value
+
+    @override
+    @classmethod
+    def from_json(cls, obj: Json) -> Self:
+        if isinstance(obj, bool):
+            return cls(obj)
+        else:
+            raise UnpackError(obj, "bool should be bool")
+
+    @override
+    def pack(self) -> bytes:
+        return int(self.value).to_bytes(self._BYTE_LENGTH)
+
+    @override
+    @classmethod
+    def unpack(cls, raw: bytes) -> Self:
+        if len(raw) != cls._BYTE_LENGTH:
+            raise UnpackError(raw, "expected {cls._BYTE_LENGTH} bytes got {raw.hex()}")
+        match int.from_bytes(raw):
+            case 0:
+                return cls(False)
+            case 1:
+                return cls(True)
+            case x:
+                raise UnpackError(raw, "bool must be 0 or 1")
+
+class _Integral(_Fixed, int):
+    _CREATE_FROM = (('value', int),)
+
+    def __new__(cls, value: int) -> Self:
+        return int.__new__(cls, value)
+
+    def __init__(self, value: int) -> None:
+        _Fixed.__init__(self)
+        upper = 2**(self._BYTE_LENGTH * 8)
+        if not (0 <= value < upper):
+            raise ValueError(f"{value} is not between 0 and {upper-1}")
+
+    @classmethod
+    def create(cls, value: int) -> Self:
+        return cls(value)
+
+    def uncreate(self) -> int:
+        return self
+
+    @override
+    def jsonify(self) -> Json:
+        return self
+
+    @override
+    @classmethod
+    def from_json(cls, obj: Json) -> Self:
+        if isinstance(obj, int):
+            return cls(obj)
+        else:
+            raise UnpackError(obj, "expected int, got {obj}")
+
+    @override
+    def pack(self) -> bytes:
+        return self.to_bytes(self._BYTE_LENGTH)
+
+    @override
+    @classmethod
+    def unpack(cls, raw: bytes) -> Self:
+        if len(raw) != cls._BYTE_LENGTH:
+            raise UnpackError(raw, "expected {cls._BYTE_LENGTH} bytes, got {raw.hex()}")
+        return cls(int.from_bytes(raw))
+
+class String(Spec, str):
+    _CREATE_FROM = (('value', str),)
+
+    @classmethod
+    def create(cls, value: str) -> Self:
+        return cls(value)
+
+    def uncreate(self) -> str:
+        return self
+
+    @override
+    def jsonify(self) -> Json:
+        return self
+
+    @override
+    @classmethod
+    def from_json(cls, obj: Json) -> Self:
+        if isinstance(obj, str):
+            return cls(obj)
+        raise UnpackError(obj, "expected string, got {obj}")
+
+    @override
+    def packed_size(self) -> int:
+        return len(self.encode('utf8'))
+
+    @override
+    def pack(self) -> bytes:
+        return self.encode('utf8')
+
+    @override
+    def pack_to(self, dest: BinaryIO) -> int:
+        raw = self.encode('utf8')
+        force_write(dest, raw)
+        return len(raw)
+
+    @override
+    @classmethod
+    def unpack(cls, raw: bytes) -> Self:
+        return cls(raw.decode('utf8'))
+
+class Fill(Spec):
+    _CREATE_FROM = (('size', int),)
+
+    def __init__(self, size: int) -> None:
+        self._size = size
+
+    @property
+    def size(self) -> int:
+        return self._size
+
+    @classmethod
+    def create(cls, size: int) -> Self:
+        return cls(size)
+
+    def uncreate(self) -> int:
+        return self.size
+
+    @override
+    def jsonify(self) -> Json:
+        return self.size
+
+    @override
+    @classmethod
+    def from_json(cls, obj: Json) -> Self:
+        if isinstance(obj, int):
+            return cls(obj)
+        raise UnpackError(obj, "Json representation of Fill must be int")
+
+    @override
+    def packed_size(self) -> int:
+        return self.size
+
+    @override
+    def pack(self) -> bytes:
+        return b'\x00' * self.size
+
+    @override
+    @classmethod
+    def unpack(cls, raw: bytes) -> Self:
+        if any(raw):
+            raise UnpackError(raw, "Fill should be all zero bytes")
+        return cls(len(raw))
+
+
+class Raw(Spec, bytes):
+    _CREATE_FROM = (('value', bytes),)
+
+    @classmethod
+    def create(cls, value: bytes) -> Self:
+        return cls(value)
+
+    def uncreate(self) -> bytes:
+        return self
+
+    @override
+    def jsonify(self) -> Json:
+        return self.hex()
+
+    @override
+    @classmethod
+    def from_json(cls, obj: Json) -> Self:
+        if isinstance(obj, str):
+            return cls(bytes.fromhex(obj))
+        raise UnpackError(obj, "expected hex string, got {obj}")
+
+    @override
+    def packed_size(self) -> int:
+        return len(self)
+
+    @override
+    def pack(self) -> bytes:
+        return self
+
+    @override
+    def pack_to(self, dest: BinaryIO) -> int:
+        force_write(dest, self)
+        return len(self)
+
+    @override
+    @classmethod
+    def unpack(cls, raw: bytes) -> Self:
+        return cls(raw)
+
+class _FixRaw(Raw, _Fixed):
+    def __new__(cls, *args: Any, **kwargs: Any) -> Self:
+        return Raw.__new__(cls, *args, **kwargs)
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        if len(self) != self._BYTE_LENGTH:
+            raise ValueError("expected {self._BYTE_LENGTH} bytes, got {self.hex()}")
+
+class _Sequence[T: Spec](Spec, tuple[T,...]):
+    _ITEM_TYPE: type[T]
+
+    @override
+    def jsonify(self) -> Json:
+        return [item.jsonify() for item in self]
+
+    @override
+    @classmethod
+    def from_json(cls, obj: Json) -> Self:
+        if isinstance(obj, list):
+            return cls(cls._ITEM_TYPE.from_json(entry) for entry in obj)
+        raise UnpackError(obj, "expected list of {cls._ITEM_TYPE}, got {obj}")
+
+    @override
+    def packed_size(self) -> int:
+        return sum(item.packed_size() for item in self)
+
+    @override
+    def pack(self) -> bytes:
+        return b''.join(item.pack() for item in self)
+
+    @override
+    def pack_to(self, dest: BinaryIO) -> int:
+        return sum(item.pack_to(dest) for item in self)
+
+    @override
+    @classmethod
+    def unpack(cls, raw: bytes) -> Self:
+        buf = LimitReader.from_raw(raw)
+        elts: list[T] = []
+        while buf.limit:
+            try:
+                elts.append(cls._ITEM_TYPE.unpack_from(buf))
+            except UnpackError as e:
+                pelts: list[Json] = [str(x) for x in elts]
+                pelts.append(e.partial)
+                raise e.above(raw, pelts) from e
+        return cls(elts)
+
+@dataclass(frozen=True)
+class _StructBase(Spec):
+    _member_names: ClassVar[tuple[str,...]]
+    _member_types: ClassVar[tuple[type[Spec],...]]
+    _member_values: tuple[Spec,...] = field(init=False, repr=False, hash=False, compare=False)
+
+    def __post_init__(self) -> None:
+        accum: list[Spec] = []
+        for (name, typ) in zip(self._member_names, self._member_types):
+            obj = getattr(self, name)
+            if isinstance(obj, typ):
+                accum.append(obj)
+            else:
+                raise ValueError(f'expected type {typ} for {name} field in {type(self).__name__}, got {obj}')
+        super().__setattr__('_member_values', tuple(accum))
+
+    @override
+    def jsonify(self) -> Json:
+        return {name: value.jsonify()
+                for (name,value) in zip(self._member_names, self._member_values)}
+
+    @override
+    @classmethod
+    def from_json(cls, obj: Json) -> Self:
+        if isinstance(obj, dict):
+            try:
+                accum = {name: typ.from_json(obj[name])
+                        for (name,typ) in zip(cls._member_names, cls._member_types)}
+            except KeyError as e:
+                raise UnpackError(obj, 'missing field in json unpack') from e
+            return cls(**accum)
+        raise UnpackError(obj, "expected dict, got {obj}")
+
+    @override
+    def packed_size(self) -> int:
+        return sum(value.packed_size() for value in self._member_values)
+
+    @override
+    def pack(self) -> bytes:
+        return b''.join(value.pack() for value in self._member_values)
+
+    @override
+    def pack_to(self, dest: BinaryIO) -> int:
+        return sum(value.pack_to(dest) for value in self._member_values)
+
+    @override
+    @classmethod
+    def unpack(cls, raw: bytes) -> Self:
+        buf = LimitReader.from_raw(raw)
+        offset = 0
+        # XXX mypy doesn't know about __func__
         try:
-            size = int.from_bytes(force_read(src, self._lenlen))
-        except EOFError:
-            raise
-        except ValueError as e:
-            raise ParseError("could not read Bounded length") from e
+            instance = _StructBase.unpack_from.__func__(cls, buf) # type: ignore
+        except UnpackError as e:
+            raise e.above(raw, e.partial) from e
+        # XXX mypy doesn't realize that instance must be of type Self here
+        assert isinstance(instance, cls)
+        buf.assert_used_up()
+        return instance
+
+    @override
+    @classmethod
+    def unpack_from(cls, src: LimitReader) -> Self:
+        accum = {}
+        for (name, typ) in zip(cls._member_names, cls._member_types):
+            try:
+                accum[name] = typ.unpack_from(src)
+            except UnpackError as e:
+                part = {oname: val.jsonify() for oname,val in accum.items()}
+                part[name] = e.partial
+                raise e.above(src.got, part) from e
+        return cls(**accum)
+
+class _NamedConstBaseBase[T: IntEnum](_Fixed, ABC):
+    _T: type[T]
+    _V: type[_Integral]
+    _alternate_values: dict[int,T] = {}
+    _default_typ: T|None = None
+
+    @classmethod
+    def create(cls, value: 'int|_NamedConstBase[T]') -> Self:
+        if not isinstance(value, int):
+            value = value.value
+        obj = object.__new__(cls)
+        obj._subclass_init(value)
+        return obj
+
+    @abstractmethod
+    def _subclass_init(self, value: int) -> None: ...
+
+@dataclass(frozen=True)
+class _NamedConstBase[T: IntEnum](_NamedConstBaseBase[T]):
+    typ: T
+    value: _Integral
+
+    @property
+    def name(self) -> str:
+        return self.typ.name
+
+    @override
+    def _subclass_init(self, value: int) -> None:
+        value = self._V(value)
         try:
-            raw = force_read(src, size)
-        except ValueError as e:
-            raise ParseError(f"could not read {size} bytes for Bounded") from e
-        return self._inner._unpack(raw)
+            typ = self._T(value)
+        except ValueError:
+            try:
+                typ = self._alternate_values[value]
+            except KeyError:
+                if self._default_typ is not None:
+                    typ = self._default_typ
+                else:
+                    raise ValueError(f"Value {value} invalid for {type(self).__name__}")
+        _NamedConstBase.__init__(self, typ=typ, value=value)
+
+    def uncreate(self) -> int:
+        return self.value
+
+    @classmethod
+    def all(cls) -> Iterable[Self]:
+        for e in cls._T:
+            yield cls.create(e)
+        for v in cls._alternate_values:
+            yield cls.create(v)
+
+    @override
+    def jsonify(self) -> Json:
+        return {'name': self.name, 'value': self.value.jsonify()}
+
+    @override
+    @classmethod
+    def from_json(cls, obj: Json) -> Self:
+        match obj:
+            case {'name': name, 'value': value, **rest}:
+                if isinstance(name, str) and isinstance(value, int) and not rest:
+                    result = cls.create(value)
+                    if result.name == name:
+                        return result
+        raise UnpackError(obj, f"Invalid json for {cls.__name__}: {obj}")
+
+    @override
+    def packed_size(self) -> int:
+        return self.value.packed_size()
+
+    @override
+    def pack(self) -> bytes:
+        return self.value.pack()
+
+    @override
+    def pack_to(self, dest: BinaryIO) -> int:
+        return self.value.pack_to(dest)
+
+    @override
+    @classmethod
+    def unpack(cls, raw: bytes) -> Self:
+        return cls.create(cls._V.unpack(raw))
+
+    def __str__(self) -> str:
+        return f'{type(self).__name__}<{self.name},{self.value}>'
+
+    @classmethod
+    def __getitem__(cls, name: str) -> Self:
+        return cls.create(cls._T[name])
+
+
+class _Const[T: Spec](Spec):
+    VALUE: T
+
+    @override
+    def jsonify(self) -> Json:
+        return self.VALUE.jsonify()
+
+    @override
+    @classmethod
+    def from_json(cls, obj: Json) -> Self:
+        expected = cls.VALUE.jsonify()
+        if obj != expected:
+            raise UnpackError(obj, f"expected {expected}, got {obj}")
+        return cls()
+
+    @override
+    def packed_size(self) -> int:
+        return self.VALUE.packed_size()
+
+    @override
+    def pack(self) -> bytes:
+        return self.VALUE.pack()
+
+    @override
+    def pack_to(self, dest: BinaryIO) -> int:
+        return self.VALUE.pack_to(dest)
+
+    @override
+    @classmethod
+    def unpack(cls, raw: bytes) -> Self:
+        expected = cls.VALUE.pack()
+        if raw != expected:
+            raise UnpackError(raw, f"expected {expected.hex()}, got {raw.hex()}")
+        return cls()
+
+    @override
+    @classmethod
+    def unpack_from(cls, src: LimitReader) -> Self:
+        raw = cls.VALUE.pack()
+        got = src.read(len(raw))
+        if got != raw:
+            raise UnpackError(got, "expected const {pformat(raw)}, got {pformat(got)}")
+        return cls()
+
+class _SelecteeBase[S: IntEnum, T: Spec](Spec):
+    _SELECT_TYPE: type[_NamedConstBase[S]]
+    _DATA_TYPE: type[T]
+
+@dataclass(frozen=True)
+class _Selectee[S: IntEnum, T: Spec](_SelecteeBase[S,T]):
+    selector: _NamedConstBase[S]
+    data: T
+
+    @property
+    def typ(self) -> S:
+        return self.selector.typ
+
+    @override
+    def jsonify(self) -> Json:
+        return {'selector': self.selector.jsonify(), 'data': self.data.jsonify()}
+
+    @classmethod
+    def _check_selector(cls, sel: _NamedConstBase[S]) -> _NamedConstBase[S]:
+        if isinstance(sel, cls._SELECT_TYPE):
+            return sel
+        raise ValueError
+
+    @override
+    @classmethod
+    def from_json(cls, obj: Json) -> Self:
+        match obj:
+            case {'selector': jsel, 'data': data, **rest}:
+                if rest:
+                    raise UnpackError(obj, f"Got extra fields in selector from_json: {rest}")
+                sel = cls._check_selector(cls._SELECT_TYPE.from_json(jsel))
+                return cls(selector=sel, data=cls._DATA_TYPE.from_json(data))
+        raise ValueError
+
+    @override
+    def packed_size(self) -> int:
+        return self.selector.packed_size() + self.data.packed_size()
+
+    @override
+    def pack(self) -> bytes:
+        return self.selector.pack() + self.data.pack()
+
+    @override
+    def pack_to(self, dest: BinaryIO) -> int:
+        return self.selector.pack_to(dest) + self.data.pack_to(dest)
+
+    @override
+    @classmethod
+    def unpack(cls, raw: bytes) -> Self:
+        slen = cls._SELECT_TYPE._BYTE_LENGTH
+        if len(raw) < slen:
+            raise ValueError
+        sel = cls._check_selector(cls._SELECT_TYPE.unpack(raw[:slen]))
+        try:
+            return cls(selector=sel, data=cls._DATA_TYPE.unpack(raw[slen:]))
+        except UnpackError as e:
+            raise e.above(raw, {'selector': str(sel), 'data': e.partial}) from e
+
+    @override
+    @classmethod
+    def unpack_from(cls, src: LimitReader) -> Self:
+        sel = cls._SELECT_TYPE.unpack_from(src)
+        return cls.unpack_from_data(sel, src)
+
+    @classmethod
+    def unpack_from_data(cls, sel: _NamedConstBase[S], src: LimitReader) -> Self:
+        sel = cls._check_selector(sel)
+        try:
+            data = cls._DATA_TYPE.unpack_from(src)
+        except UnpackError as e:
+            raise e.above(src.got, {'selector': str(sel), 'data': e.partial}) from e
+        return cls(selector=sel, data=data)
+
+class _SpecificSelectee[S: IntEnum, T: Spec](_Selectee[S, T]):
+    _SELECTOR: S
+
+    def __init__(self, selector: _NamedConstBase[S]|None = None, data: T|None = None) -> None:
+        assert data is not None
+        if selector is not None and selector.typ != self._SELECTOR:
+            raise ValueError
+        super().__init__(selector = self._SELECT_TYPE.create(self._SELECTOR), data=data)
+
+    @override
+    @classmethod
+    def _check_selector(cls, selector: _NamedConstBase[S]) -> _NamedConstBase[S]:
+        if selector.typ == cls._SELECTOR:
+            return selector
+        raise ValueError
+
+class _SelectBase[S: IntEnum](Spec):
+    _SELECT_TYPE: type[_NamedConstBase[S]]
+    _GENERIC_TYPE: type[_Selectee[S,Spec]] | None
+    _SELECTEES: dict[S, type[_Selectee[S,Spec]]]
+
+@dataclass(frozen=True)
+class _Select[S: IntEnum](_SelectBase[S]):
+    value: _Selectee[S,Spec]
+
+    @property
+    def typ(self) -> S:
+        return self.value.typ
+
+    @property
+    def data(self) -> Spec:
+        return self.value.data
+
+    @override
+    def jsonify(self) -> Json:
+        return self.value.jsonify()
+
+    @classmethod
+    def _get_value_cls(cls, selector: S) -> type[_Selectee[S,Spec]]:
+        try:
+            return cls._SELECTEES[selector]
+        except KeyError:
+            if cls._GENERIC_TYPE is None:
+                raise ValueError(f'got unexpected selector {repr(selector)} with no generic')
+            else:
+                return cls._GENERIC_TYPE
+
+    @override
+    @classmethod
+    def from_json(cls, obj: Json) -> Self:
+        match obj:
+            case {'selector': jsel}:
+                selector = cls._SELECT_TYPE.from_json(jsel)
+                value_cls = cls._get_value_cls(selector.typ)
+                return cls(value=value_cls.from_json(obj))
+        raise ValueError
+
+    @override
+    def packed_size(self) -> int:
+        return self.value.packed_size()
+
+    @override
+    def pack(self) -> bytes:
+        return self.value.pack()
+
+    @override
+    def pack_to(self, dest: BinaryIO) -> int:
+        return self.value.pack_to(dest)
+
+    @override
+    @classmethod
+    def unpack(cls, raw: bytes) -> Self:
+        slen = cls._SELECT_TYPE._BYTE_LENGTH
+        if len(raw) < slen:
+            raise ValueError
+        selector = cls._SELECT_TYPE.unpack(raw[:slen])
+        value_cls = cls._get_value_cls(selector.typ)
+        try:
+            return cls(value_cls.unpack(raw))
+        except UnpackError as e:
+            raise e.above(raw, {'selector': str(selector), 'data': e.partial}) from e
+
+    @override
+    @classmethod
+    def unpack_from(cls, src: LimitReader) -> Self:
+        selector = cls._SELECT_TYPE.unpack_from(src)
+        try:
+            return cls(cls._get_value_cls(selector.typ).unpack_from_data(selector, src))
+        except UnpackError as e:
+            raise e.above(src.got, {'selector': str(selector), 'data': e.partial}) from e
