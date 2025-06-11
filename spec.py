@@ -141,6 +141,85 @@ class _Wrapper[T: Spec](Spec):
     def unpack_from(cls, src: LimitReader) -> Self:
         return cls(data=cls._DATA_TYPE.unpack_from(src))
 
+class _Maybe[T: Spec](Spec):
+    _DATA_TYPE: type[T]
+    _NOTHING = b'N'
+    _SOMETHING = b'S'
+
+    def __init__(self, data: T|None=None) -> None:
+        if data is not None and not isinstance(data, self._DATA_TYPE):
+            raise ValueError("expected type {self._DATA_TYPE}, got {data}")
+        self._data: T|None = data
+
+    @property
+    def data(self) -> T|None:
+        return self._data
+
+    @override
+    def jsonify(self) -> Json:
+        if self.data is None:
+            return None
+        else:
+            return self.data.jsonify()
+
+    @override
+    @classmethod
+    def from_json(cls, obj: Json) -> Self:
+        if obj is None:
+            return cls(data=None)
+        else:
+            return cls(data=cls._DATA_TYPE.from_json(obj))
+
+    @override
+    def packed_size(self) -> int:
+        if self.data is None:
+            return 1
+        else:
+            return 1 + self.data.packed_size()
+
+    @override
+    def pack(self) -> bytes:
+        if self.data is None:
+            return self._NOTHING
+        else:
+            return self._SOMETHING + self.data.pack()
+
+    @override
+    def pack_to(self, dest: BinaryIO) -> int:
+        if self.data is None:
+            force_write(dest, self._NOTHING)
+            return 1
+        else:
+            force_write(dest, self._SOMETHING)
+            return 1 + self.data.pack_to(dest)
+
+    @override
+    @classmethod
+    def unpack(cls, raw: bytes) -> Self:
+        if not raw:
+            raise UnpackError(raw, "needed at least one byte bot empty bytes")
+        match raw[:1]:
+            case cls._NOTHING:
+                if len(raw) != 1:
+                    raise UnpackError(raw, f"got extra bytes for nothing: {raw[1:].hex()}")
+                return cls(data=None)
+            case cls._SOMETHING:
+                return cls(data=cls._DATA_TYPE.unpack(raw[1:]))
+            case other:
+                raise UnpackError(raw, f"unrecognized marker for Maybe: {other.hex()}")
+
+    @override
+    @classmethod
+    def unpack_from(cls, src: LimitReader) -> Self:
+        match src.read(1):
+            case cls._NOTHING:
+                return cls(data=None)
+            case cls._SOMETHING:
+                data = cls._DATA_TYPE.unpack_from(src)
+                return cls(data=data)
+            case other:
+                raise UnpackError(src.got, f"unrecognized marker for Maybe: {other.hex()}")
+
 class _Fixed(Spec):
     _BYTE_LENGTH: int
 
@@ -760,6 +839,10 @@ class _SelectBase[S: IntEnum](Spec):
 @dataclass(frozen=True)
 class _Select[S: IntEnum](_SelectBase[S]):
     value: _Selectee[S,Spec]
+
+    @property
+    def selector(self) -> _NamedConstBase[S]:
+        return self.value.selector
 
     @property
     def typ(self) -> S:

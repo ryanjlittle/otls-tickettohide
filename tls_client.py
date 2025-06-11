@@ -85,17 +85,12 @@ from tls_records import (
     CCS_MESSAGE,
 )
 from tls_keycalc import KeyCalc, HandshakeTranscript, TicketInfo
+from tls_ech import EchType
 
 class PskOption(enum.Enum):
     NONE   = enum.auto()
     GREASE = enum.auto()
     TICKET = enum.auto()
-
-class EchOption(enum.Enum):
-    NONE   = enum.auto()
-    GREASE = enum.auto()
-    REAL   = enum.auto()
-    INNER  = enum.auto()
 
 def build_client_hello(
         sni: str|None = None, # server name indication
@@ -108,22 +103,20 @@ def build_client_hello(
         psk_modes: Iterable[PskKeyExchangeMode] = DEFAULT_KEX_MODES,
         send_time: float|None = None, # default to current time
         rseed: int|None = None, # optional seed for repeatability; NOT secure
-        ech_option: EchOption = EchOption.GREASE,
-        ech_config: ECHConfigVariant|None = None # must match ech_option
+        ech_type: EchType = EchType.OUTER,
+        ech_config: ECHConfigVariant|None = None # OUTER ECH with no config means GREASE
 ) -> tuple[ClientHelloHandshake, ClientSecrets]:
     """Returns (unpacked) ClientHello handshake struct and ClientSecrets tuple."""
 
     rgen = SystemRandom() if rseed is None else Random(rseed)
 
+    inner_ch: ClientHelloHandshake|None = None
+    include_legacy_exts = ech_type != EchType.INNER
+
     if psk_option == PskOption.NONE and ticket is not None:
         psk_option = PskOption.TICKET
     if (ticket is not None) != (psk_option == PskOption.TICKET):
         raise ValueError("must provide ticket iff psk_option is TICKET")
-
-    if ech_option == EchOption.NONE and ech_config is not None:
-        ech_option = EchOption.REAL
-    if (ech_config is not None) != (ech_option == EchOption.REAL):
-        raise ValueError("must provide ech_config iff ech_option is REAL")
 
     if ciphers is None:
         if ticket is None:
@@ -137,6 +130,30 @@ def build_client_hello(
         raise ValueError("incompatible cipher suites for this ticket")
 
     kex_groups = tuple(kex_groups)
+
+    if ech_config is not None:
+        if ech_type != EchType.OUTER:
+            raise ValueError("ech_config should only be specified for OUTER ech_type")
+        inner_ch, inner_secrets = build_client_hello(
+            sni = sni,
+            ciphers = ciphers,
+            kex_groups = kex_groups,
+            kex_share_groups = kex_share_groups,
+            sig_algs = sig_algs,
+            psk_option = psk_option,
+            ticket = ticket,
+            psk_modes = psk_modes,
+            send_time = send_time,
+            rseed = (None if rseed is None else rgen.randrange(2**128))
+            ech_type = EchType.INNER,
+        )
+        sesid = inner_ch.data.session_id
+        ciphers = inner_ch.data.ciphers
+        if psk_option == PskOption.TICKET:
+            psk_option = PskOption.GREASE
+            ticket = None
+            #TODO FIXME HERE
+        raise TLSTodo("translate inner_secrets and extensions for outer before continuing")
 
     # generate key exchange secrets and shares
     kex_sks: list[bytes] = []
@@ -161,7 +178,7 @@ def build_client_hello(
               (sni if ech_config is None else ech_config.data.public_name))]
         ))
 
-    if ech_option != EchOption.INNER:
+    if ech_type != EchType.INNER:
         #legacy extensions; skip for INNER ECH variant
 
         # indicates all point formats are accepted (legacy)
@@ -173,7 +190,7 @@ def build_client_hello(
     # which groups supported for key exchange
     extensions.append(SupportedGroupsClientExtension.create(kex_groups))
 
-    if ech_option != EchOption.INNER:
+    if ech_type != EchType.INNER:
         #legacy extensions; skip for INNER ECH variant
 
         # more backwards compatibility empty info,
@@ -410,7 +427,7 @@ class ClientHandshake(AbstractHandshake, PayloadProcessor):
                         raise TlsError(f"no implementation for kex group {group}")
                     kex_secret = kex.exchange(private, ext.data.pubkey)
                 case SupportedVersionsServerExtension():
-                    assert any(v == Version.TLS_1_3 for v in ext.data)
+                    assert ext.data.uncreate() == Version.TLS_1_3.value
                 case PreSharedKeyServerExtension():
                     if ext.data != 0:
                         raise TlsError(f'unexpected index in PRE_SHARED_KEY: {ext.data}')

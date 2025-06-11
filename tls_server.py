@@ -321,9 +321,7 @@ class _ServerHandshake(AbstractHandshake, PayloadProcessor):
                 if Version.TLS_1_3 not in ext.data:
                     raise TlsError("client does not support TLS 1.3")
                 logger.info('negotiated TLS 1.3')
-                self.sh_exts.append(SupportedVersionsServerExtension.create(
-                    [Version.TLS_1_3],
-                ))
+                self.sh_exts.append(SupportedVersionsServerExtension.create(Version.TLS_1_3))
             case ServerNameClientExtension():
                 logger.info(f"Client sent SNI with hostnames '{[ent.host_name for ent in ext.data]}'")
             case SignatureAlgorithmsClientExtension():

@@ -180,6 +180,7 @@ def get_create_from(typ: Nested, names: OneToOne[GenSpec,str]) -> Iterable[tuple
             except KeyError:
                 return None
 
+
 @flyweight
 @dataclass(frozen=True)
 class Wrap(GenSpec):
@@ -216,6 +217,48 @@ class Wrap(GenSpec):
                     return {creat.to_pairs('self.data')}
             """))
         creat.gen_replace(dest)
+
+    def prereqs(self) -> Iterable[Nested]:
+        yield self.inner_type
+
+
+@flyweight
+@dataclass(frozen=True)
+class Maybe(GenSpec):
+    inner_type: Nested
+
+    def __post_init__(self) -> None:
+        self.update_stub(f'Maybe{get_stub(self.inner_type)}', 30)
+
+    @override
+    def create_from(self, names: OneToOne[GenSpec,str]) -> Iterable[tuple[str,str]] | None:
+        creat = _ItemCreation(self.inner_type, names)
+        return (('data', f'{creat.item}|None'),)
+
+    @override
+    def suggest(self, name: str, rank: float) -> bool:
+        if rank == FORCE_RANK:
+            return self.update_stub(name, rank)
+        elif maybe_suggest(self.inner_type, name, min(rank, 90)):
+            return self.update_stub(f'Maybe{get_stub(self.inner_type)}', 30)
+        else:
+            return False
+
+    def generate(self, dest: TextIO, names: OneToOne[GenSpec,str]) -> None:
+        dt = get_name(self.inner_type, names)
+        creat = _ItemCreation(self.inner_type, names)
+        item_t = f'{creat.item}|None'
+        dest.write(dedent(f"""\
+            class {names[self]}(spec._Maybe[{dt}]):
+                _DATA_TYPE = {dt}
+
+                @classmethod
+                def create(cls, data: {item_t} = None) -> Self:
+                    return cls(data=(None if data is None else {creat.create_line(dt,'data')}))
+
+                def uncreate(self) -> {item_t}:
+                    return None if self._data is None else {creat.to_pairs('self._data')}
+            """))
 
     def prereqs(self) -> Iterable[Nested]:
         yield self.inner_type

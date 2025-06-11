@@ -19,6 +19,7 @@ from spec_gen import (
     Select,
     Wrap,
     FixRaw,
+    Maybe,
     generate_specs,
 )
 
@@ -128,6 +129,7 @@ specs: dict[str, GenSpec] = kwdict(
         KEY_SHARE                              = 51,
         TICKET_REQUEST                         = 58,
         ENCRYPTED_CLIENT_HELLO                 = 65037,
+        ECH_OUTER_EXTENSIONS                   = 65535,
 	    GREASE                                 = grease16,
         UNRECOGNIZED                           = 65000,
     ),
@@ -303,6 +305,8 @@ specs: dict[str, GenSpec] = kwdict(
                     ),
                 INNER = Empty,
             ),
+        ECH_OUTER_EXTENSIONS =
+            Bounded(8, Sequence('ExtensionType')),
     ),
 
     ECHConfigVersion = NamedConst(16)(
@@ -338,8 +342,7 @@ specs: dict[str, GenSpec] = kwdict(
             Bounded(16, Sequence('NamedGroup')),
         SIGNATURE_ALGORITHMS =
             Bounded(16, Sequence('SignatureScheme')),
-        SUPPORTED_VERSIONS =
-            Sequence('Version'),
+        SUPPORTED_VERSIONS = 'Version',
         KEY_SHARE = 'KeyShareEntry',
         TICKET_REQUEST = Struct(expected_count = Uint(8)),
         PRE_SHARED_KEY = Uint(16),
@@ -461,8 +464,9 @@ specs: dict[str, GenSpec] = kwdict(
     ),
 
     ClientSecrets = Struct(
-        psk = Bounded(8, Raw),
+        psk = Maybe(Bounded(8, Raw)),
         kex_sks = Bounded(16, Sequence(Bounded(16, Raw))),
+        inner_ch = Maybe('ClientHelloHandshake'),
     ),
 
     Transcript = Struct(

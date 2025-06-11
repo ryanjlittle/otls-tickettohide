@@ -175,6 +175,7 @@ class ExtensionTypes(enum.IntEnum):
     KEY_SHARE = 51
     TICKET_REQUEST = 58
     ENCRYPTED_CLIENT_HELLO = 65037
+    ECH_OUTER_EXTENSIONS = 65535
     GREASE = 2570
     UNRECOGNIZED = 65000
 
@@ -217,6 +218,7 @@ class ExtensionType(spec._NamedConstBase[ExtensionTypes]):
     KEY_SHARE: 'ExtensionType'
     TICKET_REQUEST: 'ExtensionType'
     ENCRYPTED_CLIENT_HELLO: 'ExtensionType'
+    ECH_OUTER_EXTENSIONS: 'ExtensionType'
     GREASE: 'ExtensionType'
     UNRECOGNIZED: 'ExtensionType'
 
@@ -1873,13 +1875,97 @@ class EncryptedClientHelloClientExtension(spec._SpecificSelectee[ExtensionTypes,
     def parent(self) -> 'ClientExtension':
         return ClientExtension(self)
 
+class SeqExtensionType(spec._Sequence[ExtensionType]):
+    _ITEM_TYPE = ExtensionType
 
-ClientExtensionVariant = ServerNameClientExtension | SupportedGroupsClientExtension | SignatureAlgorithmsClientExtension | SupportedVersionsClientExtension | PskKeyExchangeModesClientExtension | KeyShareClientExtension | TicketRequestClientExtension | PreSharedKeyClientExtension | EncryptedClientHelloClientExtension | GenericClientExtension
+    @classmethod
+    def create(cls, items: Iterable[int|ExtensionType]) -> Self:
+        return cls(ExtensionType.create(item) for item in items)
+
+    def uncreate(self) -> Iterable[int|ExtensionType]:
+        for item in self:
+            yield item.uncreate()
+
+class BoundedSeqExtensionType(SeqExtensionType, Spec):
+    _LENGTH_TYPES: tuple[type[spec._Integral],...]
+
+    @override
+    def packed_size(self) -> int:
+        return sum(LT._BYTE_LENGTH for LT in self._LENGTH_TYPES) + super().packed_size()
+
+    @override
+    def pack(self) -> bytes:
+        raw = super().pack()
+        length = len(raw)
+        parts = [raw]
+        for LT in reversed(self._LENGTH_TYPES):
+            parts.append(LT(length).pack())
+            length += LT._BYTE_LENGTH
+        parts.reverse()
+        return b''.join(parts)
+
+    @override
+    def pack_to(self, dest: BinaryIO) -> int:
+        return Spec.pack_to(self, dest)
+
+    @override
+    @classmethod
+    def unpack(cls, raw: bytes) -> Self:
+        offset = 0
+        for LT in cls._LENGTH_TYPES:
+            lenlen = LT._BYTE_LENGTH
+            if len(raw) < offset + lenlen:
+                raise ValueError
+            length = LT.unpack(raw[offset:offset+lenlen])
+            if len(raw) != offset + lenlen + length:
+                raise ValueError
+            offset += lenlen
+        try:
+            return super().unpack(raw[offset:])
+        except UnpackError as e:
+            raise e.above(raw, {'bounded_size': length, 'data': e.partial}) from e
+
+    @override
+    @classmethod
+    def unpack_from(cls, src: LimitReader) -> Self:
+        lit = iter(cls._LENGTH_TYPES)
+        length = next(lit).unpack_from(src)
+        for LT in lit:
+            len2 = LT.unpack_from(src)
+            if length != LT._BYTE_LENGTH + len2:
+                raise UnpackError(src.got, f"bounded length should have been {length - LT._BYTE_LENGTH} but got {len2}")
+            length = len2
+        supraw = src.read(length)
+        try:
+            return super().unpack(supraw)
+        except UnpackError as e:
+            raise e.above(src.got, {'bounded_size': length, 'data': e.partial}) from e
+
+class B16B8SeqExtensionType(BoundedSeqExtensionType):
+    _LENGTH_TYPES = (Uint16, Uint8)
+
+class EchOuterExtensionsClientExtension(spec._SpecificSelectee[ExtensionTypes, B16B8SeqExtensionType]):
+    _SELECT_TYPE = ExtensionType
+    _DATA_TYPE = B16B8SeqExtensionType
+    _SELECTOR = ExtensionTypes.ECH_OUTER_EXTENSIONS
+
+    @classmethod
+    def create(cls, items:Iterable[int|ExtensionType]) -> Self:
+        return cls(data=B16B8SeqExtensionType.create(items))
+
+    def uncreate(self) -> Iterable[int|ExtensionType]:
+        return self.data.uncreate()
+
+    def parent(self) -> 'ClientExtension':
+        return ClientExtension(self)
+
+
+ClientExtensionVariant = ServerNameClientExtension | SupportedGroupsClientExtension | SignatureAlgorithmsClientExtension | SupportedVersionsClientExtension | PskKeyExchangeModesClientExtension | KeyShareClientExtension | TicketRequestClientExtension | PreSharedKeyClientExtension | EncryptedClientHelloClientExtension | EchOuterExtensionsClientExtension | GenericClientExtension
 
 class ClientExtension(spec._Select[ExtensionTypes]):
     _SELECT_TYPE = ExtensionType
     _GENERIC_TYPE = GenericClientExtension
-    _SELECTEES = {ExtensionTypes.SERVER_NAME:ServerNameClientExtension, ExtensionTypes.SUPPORTED_GROUPS:SupportedGroupsClientExtension, ExtensionTypes.SIGNATURE_ALGORITHMS:SignatureAlgorithmsClientExtension, ExtensionTypes.SUPPORTED_VERSIONS:SupportedVersionsClientExtension, ExtensionTypes.PSK_KEY_EXCHANGE_MODES:PskKeyExchangeModesClientExtension, ExtensionTypes.KEY_SHARE:KeyShareClientExtension, ExtensionTypes.TICKET_REQUEST:TicketRequestClientExtension, ExtensionTypes.PRE_SHARED_KEY:PreSharedKeyClientExtension, ExtensionTypes.ENCRYPTED_CLIENT_HELLO:EncryptedClientHelloClientExtension}
+    _SELECTEES = {ExtensionTypes.SERVER_NAME:ServerNameClientExtension, ExtensionTypes.SUPPORTED_GROUPS:SupportedGroupsClientExtension, ExtensionTypes.SIGNATURE_ALGORITHMS:SignatureAlgorithmsClientExtension, ExtensionTypes.SUPPORTED_VERSIONS:SupportedVersionsClientExtension, ExtensionTypes.PSK_KEY_EXCHANGE_MODES:PskKeyExchangeModesClientExtension, ExtensionTypes.KEY_SHARE:KeyShareClientExtension, ExtensionTypes.TICKET_REQUEST:TicketRequestClientExtension, ExtensionTypes.PRE_SHARED_KEY:PreSharedKeyClientExtension, ExtensionTypes.ENCRYPTED_CLIENT_HELLO:EncryptedClientHelloClientExtension, ExtensionTypes.ECH_OUTER_EXTENSIONS:EchOuterExtensionsClientExtension}
 
     def __init__(self, value: ClientExtensionVariant) -> None:
         super().__init__(value)
@@ -2491,19 +2577,74 @@ class SignatureAlgorithmsServerExtension(spec._SpecificSelectee[ExtensionTypes, 
     def parent(self) -> 'ServerExtension':
         return ServerExtension(self)
 
-class B16SeqVersion(BoundedSeqVersion):
+class BoundedVersion(Version, Spec):
+    _LENGTH_TYPES: tuple[type[spec._Integral],...]
+
+    @override
+    def packed_size(self) -> int:
+        return sum(LT._BYTE_LENGTH for LT in self._LENGTH_TYPES) + super().packed_size()
+
+    @override
+    def pack(self) -> bytes:
+        raw = super().pack()
+        length = len(raw)
+        parts = [raw]
+        for LT in reversed(self._LENGTH_TYPES):
+            parts.append(LT(length).pack())
+            length += LT._BYTE_LENGTH
+        parts.reverse()
+        return b''.join(parts)
+
+    @override
+    def pack_to(self, dest: BinaryIO) -> int:
+        return Spec.pack_to(self, dest)
+
+    @override
+    @classmethod
+    def unpack(cls, raw: bytes) -> Self:
+        offset = 0
+        for LT in cls._LENGTH_TYPES:
+            lenlen = LT._BYTE_LENGTH
+            if len(raw) < offset + lenlen:
+                raise ValueError
+            length = LT.unpack(raw[offset:offset+lenlen])
+            if len(raw) != offset + lenlen + length:
+                raise ValueError
+            offset += lenlen
+        try:
+            return super().unpack(raw[offset:])
+        except UnpackError as e:
+            raise e.above(raw, {'bounded_size': length, 'data': e.partial}) from e
+
+    @override
+    @classmethod
+    def unpack_from(cls, src: LimitReader) -> Self:
+        lit = iter(cls._LENGTH_TYPES)
+        length = next(lit).unpack_from(src)
+        for LT in lit:
+            len2 = LT.unpack_from(src)
+            if length != LT._BYTE_LENGTH + len2:
+                raise UnpackError(src.got, f"bounded length should have been {length - LT._BYTE_LENGTH} but got {len2}")
+            length = len2
+        supraw = src.read(length)
+        try:
+            return super().unpack(supraw)
+        except UnpackError as e:
+            raise e.above(src.got, {'bounded_size': length, 'data': e.partial}) from e
+
+class B16Version(BoundedVersion):
     _LENGTH_TYPES = (Uint16, )
 
-class SupportedVersionsServerExtension(spec._SpecificSelectee[ExtensionTypes, B16SeqVersion]):
+class SupportedVersionsServerExtension(spec._SpecificSelectee[ExtensionTypes, B16Version]):
     _SELECT_TYPE = ExtensionType
-    _DATA_TYPE = B16SeqVersion
+    _DATA_TYPE = B16Version
     _SELECTOR = ExtensionTypes.SUPPORTED_VERSIONS
 
     @classmethod
-    def create(cls, items:Iterable[int|Version]) -> Self:
-        return cls(data=B16SeqVersion.create(items))
+    def create(cls, value:int|Version) -> Self:
+        return cls(data=B16Version.create(value))
 
-    def uncreate(self) -> Iterable[int|Version]:
+    def uncreate(self) -> int|Version:
         return self.data.uncreate()
 
     def parent(self) -> 'ServerExtension':
@@ -4110,6 +4251,16 @@ class RecordEntry(spec._StructBase):
     def uncreate(self) -> tuple[bytes, tuple[int|ContentType,int|Version,bytes], bool]:
         return (self.raw.uncreate(), self.record.uncreate(), self.from_client.uncreate())
 
+class MaybeB8Raw(spec._Maybe[B8Raw]):
+    _DATA_TYPE = B8Raw
+
+    @classmethod
+    def create(cls, data: bytes|None = None) -> Self:
+        return cls(data=(None if data is None else B8Raw.create(data)))
+
+    def uncreate(self) -> bytes|None:
+        return None if self._data is None else self._data.uncreate()
+
 class SeqB16Raw(spec._Sequence[B16Raw]):
     _ITEM_TYPE = B16Raw
 
@@ -4179,22 +4330,33 @@ class BoundedSeqB16Raw(SeqB16Raw, Spec):
 class B16SeqB16Raw(BoundedSeqB16Raw):
     _LENGTH_TYPES = (Uint16, )
 
-@dataclass(frozen=True)
-class ClientSecrets(spec._StructBase):
-    _member_names: ClassVar[tuple[str,...]] = ('psk','kex_sks',)
-    _member_types: ClassVar[tuple[type[Spec],...]] = (B8Raw,B16SeqB16Raw,)
-    psk: B8Raw
-    kex_sks: B16SeqB16Raw
-
-    def replace(self, psk:bytes|None=None, kex_sks:Iterable[bytes]|None=None) -> Self:
-        return type(self)((self.psk if psk is None else B8Raw.create(psk)), (self.kex_sks if kex_sks is None else B16SeqB16Raw.create(kex_sks)))
+class MaybeClientHelloHandshake(spec._Maybe[ClientHelloHandshake]):
+    _DATA_TYPE = ClientHelloHandshake
 
     @classmethod
-    def create(cls,psk:bytes,kex_sks:Iterable[bytes]) -> Self:
-        return cls(psk=B8Raw.create(psk), kex_sks=B16SeqB16Raw.create(kex_sks))
+    def create(cls, data: tuple[int|Version,bytes,bytes,Iterable[int|CipherSuite],Iterable[int],Iterable[ClientExtensionVariant]]|None = None) -> Self:
+        return cls(data=(None if data is None else ClientHelloHandshake.create(*data)))
 
-    def uncreate(self) -> tuple[bytes, Iterable[bytes]]:
-        return (self.psk.uncreate(), self.kex_sks.uncreate())
+    def uncreate(self) -> tuple[int|Version,bytes,bytes,Iterable[int|CipherSuite],Iterable[int],Iterable[ClientExtensionVariant]]|None:
+        return None if self._data is None else self._data.uncreate()
+
+@dataclass(frozen=True)
+class ClientSecrets(spec._StructBase):
+    _member_names: ClassVar[tuple[str,...]] = ('psk','kex_sks','inner_ch',)
+    _member_types: ClassVar[tuple[type[Spec],...]] = (MaybeB8Raw,B16SeqB16Raw,MaybeClientHelloHandshake,)
+    psk: MaybeB8Raw
+    kex_sks: B16SeqB16Raw
+    inner_ch: MaybeClientHelloHandshake
+
+    def replace(self, psk:bytes|None|None=None, kex_sks:Iterable[bytes]|None=None, inner_ch:tuple[int|Version,bytes,bytes,Iterable[int|CipherSuite],Iterable[int],Iterable[ClientExtensionVariant]]|None|None=None) -> Self:
+        return type(self)((self.psk if psk is None else MaybeB8Raw.create(psk)), (self.kex_sks if kex_sks is None else B16SeqB16Raw.create(kex_sks)), (self.inner_ch if inner_ch is None else MaybeClientHelloHandshake.create(inner_ch)))
+
+    @classmethod
+    def create(cls,psk:bytes|None,kex_sks:Iterable[bytes],inner_ch:tuple[int|Version,bytes,bytes,Iterable[int|CipherSuite],Iterable[int],Iterable[ClientExtensionVariant]]|None) -> Self:
+        return cls(psk=MaybeB8Raw.create(psk), kex_sks=B16SeqB16Raw.create(kex_sks), inner_ch=MaybeClientHelloHandshake.create(inner_ch))
+
+    def uncreate(self) -> tuple[bytes|None, Iterable[bytes], tuple[int|Version,bytes,bytes,Iterable[int|CipherSuite],Iterable[int],Iterable[ClientExtensionVariant]]|None]:
+        return (self.psk.uncreate(), self.kex_sks.uncreate(), self.inner_ch.uncreate())
 
 class SeqRecordEntry(spec._Sequence[RecordEntry]):
     _ITEM_TYPE = RecordEntry
