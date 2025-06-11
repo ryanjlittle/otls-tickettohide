@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 
+from dataclasses import dataclass, field
+from typing import Any
+import socket
+import logging
+
 from spec import *
 from tls13_spec import *
 from tls_common import *
 from tls_crypto import *
 from tls_keycalc import *
 from tls_server import *
-
-from dataclasses import dataclass, field
-from typing import Any
 
 @dataclass
 class Experiment:
@@ -19,10 +21,10 @@ class Experiment:
     count: int = field(init=False, default=0)
     last_svr: Server|None = field(init=False, default=None)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         self.secrets = gen_server_secrets(self.hostname)
 
-    def connect(self, msg=None):
+    def connect(self, msg:str|None=None) -> None:
         self.count += 1
         if msg is None:
             msg = f'connection #{self.count}'
