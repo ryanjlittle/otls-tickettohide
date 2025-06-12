@@ -11,6 +11,8 @@ import tls_crypto
 import tls_keycalc
 import tls_records
 import tls_client
+import argparse
+import logging
 
 
 def check[T](a: T, b: T) -> None:
@@ -113,7 +115,15 @@ def all_tests() -> None:
     for (cls, js, rawhex) in error_test_cases():
         test_error(cls, js, rawhex)
         count += 1
-    print(f'PASSED all {count} tests')
+    print(f'PASSED all {count} tests of spec (un)serialization')
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(
+        description = 'Perform three client-server tests on localhost',
+    )
+    parser.add_argument('-v', '--verbose', action='store_true')
+    args = parser.parse_args()
+
+    log_level = logging.INFO if args.verbose else logging.WARNING
+    logging.basicConfig(level=log_level)
     all_tests()

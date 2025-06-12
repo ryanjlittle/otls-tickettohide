@@ -12,6 +12,7 @@ from spec import LimitReader
 from tls13_spec import ClientSecrets, ClientHelloHandshake, Record
 from tls_client import Client
 from io import BytesIO
+import argparse
 import logging
 
 logger = logging.getLogger('test_example')
@@ -51,7 +52,6 @@ class Example:
         self._connected = False
 
     def go(self) -> None:
-        logging.basicConfig(level=logging.INFO)
         self.start()
         self.connect()
         self.send()
@@ -98,4 +98,13 @@ class Example:
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(
+        description = 'Perform three client-server tests on localhost',
+    )
+    parser.add_argument('-v', '--verbose', action='store_true')
+    args = parser.parse_args()
+
+    log_level = logging.INFO if args.verbose else logging.WARNING
+    logging.basicConfig(level=log_level)
     Example().go()
+    print("PASSED Illustrated TLS 1.3 example test")
