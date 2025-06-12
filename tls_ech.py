@@ -12,6 +12,7 @@ from tls13_spec import (
 
     ECHClientHelloType,
     OuterECHClientHello,
+    InnerECHClientHello,
     ECHConfigVariant,
     Draft24ECHConfig,
     Draft24ECHConfigData,
@@ -36,13 +37,13 @@ class EchType(enum.Enum):
     OUTER = enum.auto()
 
 def get_ech_type(chello: ClientHelloHandshake) -> EchType:
-    for ext in chello.data.extensions:
-        match ext.variant:
+    for ext in chello.data.extensions.uncreate():
+        match ext:
             case EncryptedClientHelloClientExtension() as eche:
-                match eche.data.selector:
-                    case ECHClientHelloType.OUTER:
+                match eche.data.variant:
+                    case OuterECHClientHello():
                         return EchType.OUTER
-                    case ECHClientHelloType.INNER:
+                    case InnerECHClientHello():
                         return EchType.INNER
                     case _:
                         raise ValueError(f"got unrecognized eche type {eche.data.selector}")

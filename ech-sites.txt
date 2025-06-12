@@ -1,4 +1,5 @@
 https://opensubtitles.org/cdn-cgi/trace
 https://tls-ech.dev/
+https://defo.ie/
 
 https://divested.dev/misc/ech.txt
