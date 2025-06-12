@@ -76,7 +76,7 @@ static checks using mypy:
 A single command to fully re-generate, type-check, and test
 the library is:
 
-    ./tls13_spec_gen.py && mypy --strict *.py && ./test_specs.py && ./test_example.py && ./test_client_server.py
+    ./check_all.sh
 
 
 ## Python module layout

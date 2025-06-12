@@ -7,6 +7,7 @@ from typing import Any
 import socket
 from concurrent.futures import ThreadPoolExecutor, Executor
 from contextlib import contextmanager
+import argparse
 import logging
 
 from tls_client import build_client
@@ -124,9 +125,15 @@ def do_tests(hostname:str='localhost', port:int=12345) -> None:
         trun([b'a', b'b', b'c'], [b'd', b'e', b'f'], ticket=tiks[0])
         logger.info('TEST SUCCESS for 3-round using ticket')
 
-    logger.info('ALL THREE TESTS PASSED')
-
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO)
+    parser = argparse.ArgumentParser(
+        description = 'Perform three client-server tests on localhost',
+    )
+    parser.add_argument('-v', '--verbose', action='store_true')
+    args = parser.parse_args()
+
+    log_level = logging.INFO if args.verbose else logging.WARNING
+    logging.basicConfig(level=log_level)
     do_tests()
+    print("PASSED all three client-server tests")

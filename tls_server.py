@@ -382,7 +382,14 @@ class _ServerHandshake(AbstractHandshake, PayloadProcessor):
                     case InnerECHClientHello():
                         raise TlsTODO("don't know how to handle inner ECH yet")
             case _:
-                logger.warning(f'IGNORING extension with type {ext.typ}')
+                match ext.typ:
+                    case (ExtensionTypes.LEGACY_EC_POINT_FORMATS
+                          | ExtensionTypes.LEGACY_SESSION_TICKET
+                          | ExtensionTypes.LEGACY_ENCRYPT_THEN_MAC
+                          | ExtensionTypes.LEGACY_EXTENDED_MASTER_SECRET):
+                        logger.info(f'ignoring legacy {ext.typ} extension from client')
+                    case _:
+                        logger.warning(f'IGNORING unrecognized extension with type {ext.selector}')
 
 
     def _process_finished(self, cf: FinishedHandshake) -> None:
