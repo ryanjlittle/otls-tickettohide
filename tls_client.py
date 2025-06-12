@@ -195,7 +195,7 @@ def build_client_hello(
             ech_type = EchType.INNER,
         )
 
-        ech_prep = OuterPrep(inner_ch, ech_config)
+        ech_prep = OuterPrep(ech_config, inner_ch, inner_secrets)
         add_ext(ech_prep.dummy_ext)
 
         sesid = inner_ch.data.session_id
@@ -298,7 +298,7 @@ def build_client_hello(
             psk = ticket.secret
 
     if ech_prep:
-        raise TlsTODO("fill in the dummy ech extension and return the inner secrets")
+        return ech_prep.fill_outer(ch), ech_prep.secrets
     else:
         return ch, ClientSecrets.create(kex_sks=kex_sks, psk=psk, inner_ch=None)
 

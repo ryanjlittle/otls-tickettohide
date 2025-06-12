@@ -17,9 +17,11 @@ from tls13_spec import (
     Draft24ECHConfigData,
 
     ExtensionType,
+    ClientExtensionVariant,
     EncryptedClientHelloClientExtension,
     ServerNameClientExtension,
 
+    ClientSecrets,
     HpkeSymmetricCipherSuite,
 )
 from tls_crypto import (
@@ -61,8 +63,9 @@ def encode_inner(
 
 @dataclass
 class OuterPrep:
-    inner_ch: ClientHelloHandshake
     config: ECHConfigVariant
+    inner_ch: ClientHelloHandshake
+    _inner_secrets: ClientSecrets
 
     def __post_init__(self) -> None:
         if get_ech_type(self.inner_ch) != EchType.INNER:
@@ -135,6 +138,43 @@ class OuterPrep:
                 payload = b'\x00' * self.payload_length,
             )
         )
+
+    @cached_property
+    def secrets(self) -> ClientSecrets:
+        return self._inner_secrets.replace(inner_ch = self.inner_ch.uncreate())
+
+    def fill_outer(self, outer_ch: ClientHelloHandshake) -> ClientHelloHandshake:
+        """Given a complete outer clienthello with a dummy ECH extension,
+        fills in the extension ciphertext to complete it."""
+        if get_ech_type(outer_ch) != EchType.OUTER:
+            raise ValueError("fill_outer needs an outer client hello")
+
+        # extract the ECH extension from the outer hello
+        ext_list: list[ClientExtensionVariant] = list(outer_ch.data.extensions.uncreate())
+        for index, ext in enumerate(ext_list):
+            match ext:
+                case EncryptedClientHelloClientExtension() as ech_ext:
+                    match ech_ext.data.variant:
+                        case OuterECHClientHello() as oech_ext:
+                            break
+        else:
+            assert False, "no outer ECH extension found but we already checked with get_ech_type"
+
+        if len(oech_ext.data.payload) != self.payload_length or any(oech_ext.data.payload):
+            raise ValueError(f"expected outer ECH payload to be all zeros of length {self.payload_length}")
+
+        # compute the AEAD ciphertext
+        # NB ClientHelloHandshakeData omits 4-byte hs header as required
+        aad = ClientHelloHandshakeData.pack(outer_ch.data)
+        ct = self._enc_context.seal(aad=aad, pt=self.encoded_inner)
+        if len(ct) != self.payload_length:
+            raise ValueError("expected ct length to be {self.payload_length} byt got {len(ct)}")
+
+        # rebuild the client hello with the ciphertext
+        filled_ext = EncryptedClientHelloClientExtension.create(
+            oech_ext.replace(payload=ct))
+        ext_list[index] = filled_ext
+        return outer_ch.replace(extensions=ext_list)
 
 
 def decode_inner(encoded: bytes, outer: ClientHelloHandshake) -> ClientHelloHandshake:
