@@ -4251,16 +4251,6 @@ class RecordEntry(spec._StructBase):
     def uncreate(self) -> tuple[bytes, tuple[int|ContentType,int|Version,bytes], bool]:
         return (self.raw.uncreate(), self.record.uncreate(), self.from_client.uncreate())
 
-class MaybeB8Raw(spec._Maybe[B8Raw]):
-    _DATA_TYPE = B8Raw
-
-    @classmethod
-    def create(cls, data: bytes|None = None) -> Self:
-        return cls(data=(None if data is None else B8Raw.create(data)))
-
-    def uncreate(self) -> bytes|None:
-        return None if self._data is None else self._data.uncreate()
-
 class SeqB16Raw(spec._Sequence[B16Raw]):
     _ITEM_TYPE = B16Raw
 
@@ -4330,6 +4320,16 @@ class BoundedSeqB16Raw(SeqB16Raw, Spec):
 class B16SeqB16Raw(BoundedSeqB16Raw):
     _LENGTH_TYPES = (Uint16, )
 
+class MaybeB8Raw(spec._Maybe[B8Raw]):
+    _DATA_TYPE = B8Raw
+
+    @classmethod
+    def create(cls, data: bytes|None = None) -> Self:
+        return cls(data=(None if data is None else B8Raw.create(data)))
+
+    def uncreate(self) -> bytes|None:
+        return None if self._data is None else self._data.uncreate()
+
 class MaybeClientHelloHandshake(spec._Maybe[ClientHelloHandshake]):
     _DATA_TYPE = ClientHelloHandshake
 
@@ -4342,21 +4342,21 @@ class MaybeClientHelloHandshake(spec._Maybe[ClientHelloHandshake]):
 
 @dataclass(frozen=True)
 class ClientSecrets(spec._StructBase):
-    _member_names: ClassVar[tuple[str,...]] = ('psk','kex_sks','inner_ch',)
-    _member_types: ClassVar[tuple[type[Spec],...]] = (MaybeB8Raw,B16SeqB16Raw,MaybeClientHelloHandshake,)
-    psk: MaybeB8Raw
+    _member_names: ClassVar[tuple[str,...]] = ('kex_sks','psk','inner_ch',)
+    _member_types: ClassVar[tuple[type[Spec],...]] = (B16SeqB16Raw,MaybeB8Raw,MaybeClientHelloHandshake,)
     kex_sks: B16SeqB16Raw
+    psk: MaybeB8Raw
     inner_ch: MaybeClientHelloHandshake
 
-    def replace(self, psk:bytes|None|None=None, kex_sks:Iterable[bytes]|None=None, inner_ch:tuple[int|Version,bytes,bytes,Iterable[int|CipherSuite],Iterable[int],Iterable[ClientExtensionVariant]]|None|None=None) -> Self:
-        return type(self)((self.psk if psk is None else MaybeB8Raw.create(psk)), (self.kex_sks if kex_sks is None else B16SeqB16Raw.create(kex_sks)), (self.inner_ch if inner_ch is None else MaybeClientHelloHandshake.create(inner_ch)))
+    def replace(self, kex_sks:Iterable[bytes]|None=None, psk:bytes|None|None=None, inner_ch:tuple[int|Version,bytes,bytes,Iterable[int|CipherSuite],Iterable[int],Iterable[ClientExtensionVariant]]|None|None=None) -> Self:
+        return type(self)((self.kex_sks if kex_sks is None else B16SeqB16Raw.create(kex_sks)), (self.psk if psk is None else MaybeB8Raw.create(psk)), (self.inner_ch if inner_ch is None else MaybeClientHelloHandshake.create(inner_ch)))
 
     @classmethod
-    def create(cls,psk:bytes|None,kex_sks:Iterable[bytes],inner_ch:tuple[int|Version,bytes,bytes,Iterable[int|CipherSuite],Iterable[int],Iterable[ClientExtensionVariant]]|None) -> Self:
-        return cls(psk=MaybeB8Raw.create(psk), kex_sks=B16SeqB16Raw.create(kex_sks), inner_ch=MaybeClientHelloHandshake.create(inner_ch))
+    def create(cls,kex_sks:Iterable[bytes],psk:bytes|None,inner_ch:tuple[int|Version,bytes,bytes,Iterable[int|CipherSuite],Iterable[int],Iterable[ClientExtensionVariant]]|None) -> Self:
+        return cls(kex_sks=B16SeqB16Raw.create(kex_sks), psk=MaybeB8Raw.create(psk), inner_ch=MaybeClientHelloHandshake.create(inner_ch))
 
-    def uncreate(self) -> tuple[bytes|None, Iterable[bytes], tuple[int|Version,bytes,bytes,Iterable[int|CipherSuite],Iterable[int],Iterable[ClientExtensionVariant]]|None]:
-        return (self.psk.uncreate(), self.kex_sks.uncreate(), self.inner_ch.uncreate())
+    def uncreate(self) -> tuple[Iterable[bytes], bytes|None, tuple[int|Version,bytes,bytes,Iterable[int|CipherSuite],Iterable[int],Iterable[ClientExtensionVariant]]|None]:
+        return (self.kex_sks.uncreate(), self.psk.uncreate(), self.inner_ch.uncreate())
 
 class SeqRecordEntry(spec._Sequence[RecordEntry]):
     _ITEM_TYPE = RecordEntry

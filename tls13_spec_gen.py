@@ -464,8 +464,8 @@ specs: dict[str, GenSpec] = kwdict(
     ),
 
     ClientSecrets = Struct(
-        psk = Maybe(Bounded(8, Raw)),
         kex_sks = Bounded(16, Sequence(Bounded(16, Raw))),
+        psk = Maybe(Bounded(8, Raw)),
         inner_ch = Maybe('ClientHelloHandshake'),
     ),
 

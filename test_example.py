@@ -64,8 +64,9 @@ class Example:
             self.client = Client.create(
                 ch = self.client_hello,
                 secrets = ClientSecrets.create(
-                    psk = b'',
-                    kex_sks = [self.client_secret]
+                    kex_sks = [self.client_secret],
+                    psk = None,
+                    inner_ch = None,
                 ),
             )
             self._started = True

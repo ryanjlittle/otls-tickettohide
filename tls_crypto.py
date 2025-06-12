@@ -7,7 +7,7 @@ Most of these are actually implemented by the python cryptography library;
 this module just provides the "glue code" to give a consistent interface
 for how they are used in TLS.
 """
-from typing import override, Protocol
+from typing import override, Protocol, Self
 from abc import ABC, abstractmethod, abstractproperty
 from collections.abc import Iterable, Callable
 from functools import cached_property
@@ -49,6 +49,7 @@ from tls13_spec import (
     HpkeKemId,
     HpkeKdfId,
     HpkeAeadId,
+    HpkeSymmetricCipherSuite,
     PyhpkeKeypair,
     KeyConfig,
     Draft24ECHConfig,
@@ -514,20 +515,22 @@ class KeyEncaps(ABC):
     @abstractmethod
     def get_public(self, private: bytes) -> bytes: ...
 
-def _get_pyhpke_cs(
-    kem_id: pyhpke.KEMId = pyhpke.KEMId.DHKEM_X25519_HKDF_SHA256,
-    kdf_id: pyhpke.KDFId = pyhpke.KDFId.HKDF_SHA256,
-    aead_id: pyhpke.AEADId = pyhpke.AEADId.CHACHA20_POLY1305,
-) -> pyhpke.CipherSuite:
-    return pyhpke.CipherSuite.new(kem_id, kdf_id, aead_id)
+@dataclass
+class _PyhpkeKem(KeyEncaps):
+    kem: pyhpke.KEMInterface
 
-class _Pyhpke_Kem(KeyEncaps):
-    def __init__(self, kem_id: pyhpke.KEMId):
-        self._kem = _get_pyhpke_cs(kem_id=kem_id).kem
+    @classmethod
+    def from_id(cls, kem_id: pyhpke.KEMId) -> Self:
+        cs = pyhpke.CipherSuite.new(
+            kem_id = kem_id,
+            kdf_id = pyhpke.KDFId.HKDF_SHA256,
+            aead_id = pyhpke.AEADId.CHACHA20_POLY1305,
+        )
+        return cls(kem=cs.kem)
 
     @override
     def gen_private(self, rgen: Random) -> bytes:
-        keypair = self._kem.derive_key_pair(rgen.randbytes(64))
+        keypair = self.kem.derive_key_pair(rgen.randbytes(64))
         return PyhpkeKeypair.create(
             private = keypair.private_key.to_private_bytes(),
             public = keypair.public_key.to_public_bytes(),
@@ -540,9 +543,95 @@ class _Pyhpke_Kem(KeyEncaps):
 def get_kem_alg(kem_id: HpkeKemId) -> KeyEncaps:
     """Given a kem_id, returns an object to do key encapsulation.
     """
-    return _Pyhpke_Kem(pyhpke.KEMId(kem_id.value))
+    return _PyhpkeKem.from_id(pyhpke.KEMId(kem_id.value))
 
 DEFAULT_KEM = HpkeKemId.DHKEM_X25519_HKDF_SHA256
+
+class ContextS(ABC):
+    """Hpke sender context after creating the encapsulated key."""
+    @abstractmethod
+    def seal(self, aad: bytes, pt: bytes) -> bytes: ...
+
+class ContextR(ABC):
+    """Hpke receiver context after decrypting the encapsulated key."""
+    @abstractmethod
+    def open(self, aad: bytes, ct: bytes) -> bytes: ...
+
+class HpkeAlg(ABC):
+    """Abstract base class for hybrid public-key encryption.
+    See https://datatracker.ietf.org/doc/html/rfc9180
+    """
+    @abstractproperty
+    def kem(self) -> KeyEncaps: ...
+
+    @abstractmethod
+    def ctext_size(self, ptext_size: int) -> int: ...
+
+    @abstractmethod
+    def setup_base_s(self, pubkey_r: bytes, info: bytes
+                     ) -> tuple[bytes, ContextS]: ...
+
+    @abstractmethod
+    def setup_base_r(self, enc: bytes, privkey_r: bytes, info: bytes
+                     ) -> ContextR: ...
+
+@dataclass
+class _PyhpkeContext(ContextS, ContextR):
+    ctx: pyhpke.ContextInterface
+
+    @override
+    def seal(self, aad: bytes, pt: bytes) -> bytes:
+        return self.ctx.seal(pt=pt, aad=aad)
+
+    @override
+    def open(self, aad: bytes, ct: bytes) -> bytes:
+        return self.ctx.open(ct=ct, aad=aad)
+
+@dataclass
+class _PyhpkeCipherSuite(HpkeAlg):
+    csuite: pyhpke.CipherSuite
+
+    @classmethod
+    def from_ids(cls,
+        kem_id: pyhpke.KEMId, kdf_id: pyhpke.KDFId, aead_id: pyhpke.AEADId,
+    ) -> Self:
+        return cls(csuite=pyhpke.CipherSuite.new(
+            kem_id=kem_id, kdf_id=kdf_id, aead_id=aead_id))
+
+    @override
+    @property
+    def kem(self) -> KeyEncaps:
+        return _PyhpkeKem(kem = self.csuite.kem)
+
+    @override
+    def ctext_size(self, ptext_size: int) -> int:
+        return ptext_size + self.csuite.aead.tag_size
+
+    @override
+    def setup_base_s(self, pubkey_r: bytes, info: bytes
+                     ) -> tuple[bytes, ContextS]:
+        pkr = self.csuite.kem.deserialize_public_key(pubkey_r)
+        enc, ctx = self.csuite.create_sender_context(pkr=pkr, info=info)
+        return enc, _PyhpkeContext(ctx)
+
+    @override
+    def setup_base_r(self, enc: bytes, private: bytes, info: bytes
+                     ) -> ContextR:
+        skr = self.csuite.kem.deserialize_private_key(
+            PyhpkeKeypair.unpack(private).private)
+        ctx = self.csuite.create_recipient_context(enc=enc, skr=skr, info=info)
+        return _PyhpkeContext(ctx)
+
+
+def get_hpke_alg(kem_id: HpkeKemId,
+                 csuite: HpkeSymmetricCipherSuite,
+                 ) -> HpkeAlg:
+    return _PyhpkeCipherSuite.from_ids(
+        pyhpke.KEMId(kem_id.value),
+        pyhpke.KDFId(csuite.kdf_id.value),
+        pyhpke.AEADId(csuite.aead_id.value),
+    )
+
 
 DEFAULT_HPKE_CSUITES: tuple[tuple[HpkeKdfId,HpkeAeadId],...] = (
     (HpkeKdfId.HKDF_SHA256, HpkeAeadId.AES_256_GCM),

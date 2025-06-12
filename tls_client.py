@@ -13,23 +13,26 @@ from util import same_args
 from spec import UnpackError
 from tls_common import *
 from tls13_spec import (
-    Handshake,
     ClientStates,
-    HandshakeType,
+    ClientSecrets,
+
     Record,
     ContentType,
-    PskKeyExchangeMode,
-    ExtensionTypes,
     Version,
-    ClientExtension,
-    ECHClientHelloType,
-    HpkeKdfId,
-    HpkeAeadId,
-    CipherSuite,
-    NamedGroup,
-    SignatureScheme,
+
+    Handshake,
+    HandshakeType,
+    HandshakeVariant,
     ClientHelloHandshake,
-    ClientSecrets,
+    ServerHelloHandshake,
+    EncryptedExtensionsHandshake,
+    CertificateHandshake,
+    CertificateVerifyHandshake,
+    FinishedHandshake,
+    NewSessionTicketHandshake,
+
+    ExtensionTypes,
+    ClientExtension,
     ClientExtensionVariant,
     ServerNameClientExtension,
     GenericClientExtension,
@@ -38,24 +41,28 @@ from tls13_spec import (
     SupportedVersionsClientExtension,
     PskKeyExchangeModesClientExtension,
     KeyShareClientExtension,
-    OuterECHClientHello,
-    InnerECHClientHello,
     EncryptedClientHelloClientExtension,
-    ECHConfigVariant,
     PreSharedKeyClientExtension,
-    HandshakeVariant,
-    ServerHelloHandshake,
-    EncryptedExtensionsHandshake,
-    CertificateHandshake,
-    CertificateVerifyHandshake,
-    FinishedHandshake,
-    NewSessionTicketHandshake,
+
     KeyShareServerExtension,
     SupportedVersionsServerExtension,
     PreSharedKeyServerExtension,
     ServerNameServerExtension,
     SupportedGroupsServerExtension,
     EncryptedClientHelloServerExtension,
+
+    ECHClientHelloType,
+    OuterECHClientHello,
+    InnerECHClientHello,
+
+    CipherSuite,
+    NamedGroup,
+    SignatureScheme,
+    PskKeyExchangeMode,
+    HpkeKdfId,
+    HpkeAeadId,
+
+    ECHConfigVariant,
 )
 from tls_crypto import (
     get_kex_alg,
@@ -85,12 +92,27 @@ from tls_records import (
     CCS_MESSAGE,
 )
 from tls_keycalc import KeyCalc, HandshakeTranscript, TicketInfo
-from tls_ech import EchType
+from tls_ech import EchType, OuterPrep
 
 class PskOption(enum.Enum):
     NONE   = enum.auto()
     GREASE = enum.auto()
     TICKET = enum.auto()
+
+chello_extensions_order: tuple[ExtensionTypes,...] = (
+    ExtensionTypes.SERVER_NAME,
+    ExtensionTypes.ENCRYPTED_CLIENT_HELLO,
+    ExtensionTypes.LEGACY_EC_POINT_FORMATS,
+    ExtensionTypes.SUPPORTED_GROUPS,
+    ExtensionTypes.LEGACY_SESSION_TICKET,
+    ExtensionTypes.LEGACY_ENCRYPT_THEN_MAC,
+    ExtensionTypes.LEGACY_EXTENDED_MASTER_SECRET,
+    ExtensionTypes.SIGNATURE_ALGORITHMS,
+    ExtensionTypes.SUPPORTED_VERSIONS,
+    ExtensionTypes.PSK_KEY_EXCHANGE_MODES,
+    ExtensionTypes.KEY_SHARE,
+    ExtensionTypes.PRE_SHARED_KEY,
+)
 
 def build_client_hello(
         sni: str|None = None, # server name indication
@@ -111,7 +133,6 @@ def build_client_hello(
     rgen = SystemRandom() if rseed is None else Random(rseed)
 
     inner_ch: ClientHelloHandshake|None = None
-    include_legacy_exts = ech_type != EchType.INNER
 
     if psk_option == PskOption.NONE and ticket is not None:
         psk_option = PskOption.TICKET
@@ -131,7 +152,33 @@ def build_client_hello(
 
     kex_groups = tuple(kex_groups)
 
-    if ech_config is not None:
+    extensions: dict[ExtensionTypes, ClientExtensionVariant] = {}
+    allowed_exts = set(chello_extensions_order)
+    def add_ext(ext: ClientExtensionVariant) -> None:
+        assert ext.typ not in extensions
+        assert ext.typ in allowed_exts
+        extensions[ext.typ] = ext
+
+    if ech_config is None:
+        ech_prep = None
+        sesid = rgen.randbytes(32)
+        match ech_type:
+            case EchType.OUTER:
+                # GREASE
+                add_ext(EncryptedClientHelloClientExtension.create(
+                    variant = OuterECHClientHello.create(
+                        cipher_suite = DEFAULT_HPKE_CSUITES[0],
+                        config_id = rgen.randrange(2**8),
+                        enc = rgen.randbytes(32),
+                        payload = rgen.randbytes(239),
+                    ),
+                ))
+            case EchType.INNER:
+                add_ext(EncryptedClientHelloClientExtension.create(
+                    variant = InnerECHClientHello.create(),
+                ))
+
+    else: #ech_config is not None
         if ech_type != EchType.OUTER:
             raise ValueError("ech_config should only be specified for OUTER ech_type")
         inner_ch, inner_secrets = build_client_hello(
@@ -144,16 +191,19 @@ def build_client_hello(
             ticket = ticket,
             psk_modes = psk_modes,
             send_time = send_time,
-            rseed = (None if rseed is None else rgen.randrange(2**128))
+            rseed = (None if rseed is None else rgen.randrange(2**128)),
             ech_type = EchType.INNER,
         )
+
+        ech_prep = OuterPrep(inner_ch, ech_config)
+        add_ext(ech_prep.dummy_ext)
+
         sesid = inner_ch.data.session_id
         ciphers = inner_ch.data.ciphers
         if psk_option == PskOption.TICKET:
             psk_option = PskOption.GREASE
             ticket = None
-            #TODO FIXME HERE
-        raise TLSTodo("translate inner_secrets and extensions for outer before continuing")
+        sni = ech_prep.outer_sni
 
     # generate key exchange secrets and shares
     kex_sks: list[bytes] = []
@@ -167,117 +217,90 @@ def build_client_hello(
         kex_sks.append(secret)
         shares.append((group, share))
 
-    if not shares and ticket is None:
+    if not shares and ticket is None and ech_prep is None:
         raise ValueError("need either DHE or PSK (or both), but got neither")
 
     # fill in client hello extension entries
-    extensions: list[ClientExtensionVariant] = []
     if sni is not None:
-        extensions.append(ServerNameClientExtension.create(
+        add_ext(ServerNameClientExtension.create(
             [(HOST_NAME_TYPE,
               (sni if ech_config is None else ech_config.data.public_name))]
         ))
+
+    # which groups supported for key exchange
+    add_ext(SupportedGroupsClientExtension.create(kex_groups))
+
+    # which signature algorithms allowed for CertificateVerify message
+    add_ext(SignatureAlgorithmsClientExtension.create(sig_algs))
+
+    # indicate only TLS 1.3 is supported
+    add_ext(SupportedVersionsClientExtension.create([Version.TLS_1_3]))
+
+    # indicate whether DHE must still be done on resumption with a ticket
+    add_ext(PskKeyExchangeModesClientExtension.create(psk_modes))
 
     if ech_type != EchType.INNER:
         #legacy extensions; skip for INNER ECH variant
 
         # indicates all point formats are accepted (legacy)
-        extensions.append(GenericClientExtension.create(
+        add_ext(GenericClientExtension.create(
             selector = ExtensionTypes.LEGACY_EC_POINT_FORMATS,
             data = bytes.fromhex('03000102'),
         ))
 
-    # which groups supported for key exchange
-    extensions.append(SupportedGroupsClientExtension.create(kex_groups))
-
-    if ech_type != EchType.INNER:
-        #legacy extensions; skip for INNER ECH variant
-
         # more backwards compatibility empty info,
         # probably not necessary but who knows
-        extensions.append(GenericClientExtension.create(
+        add_ext(GenericClientExtension.create(
             selector = ExtensionTypes.LEGACY_SESSION_TICKET,
             data = b'',
         ))
-        extensions.append(GenericClientExtension.create(
+        add_ext(GenericClientExtension.create(
             selector = ExtensionTypes.LEGACY_ENCRYPT_THEN_MAC,
             data = b'',
         ))
-        extensions.append(GenericClientExtension.create(
+        add_ext(GenericClientExtension.create(
             selector = ExtensionTypes.LEGACY_EXTENDED_MASTER_SECRET,
             data = b'',
         ))
 
-    # which signature algorithms allowed for CertificateVerify message
-    extensions.append(SignatureAlgorithmsClientExtension.create(sig_algs))
-
-    # indicate only TLS 1.3 is supported
-    extensions.append(SupportedVersionsClientExtension.create([Version.TLS_1_3]))
-
-    # indicate whether DHE must still be done on resumption with a ticket
-    extensions.append(PskKeyExchangeModesClientExtension.create(psk_modes))
-
     if shares:
         # send the DHKE public keys
-        extensions.append(KeyShareClientExtension.create(shares))
+        add_ext(KeyShareClientExtension.create(shares))
 
-    # add ECH extension if requested
-    match ech_option:
-        case EchOption.GREASE:
-            extensions.append(EncryptedClientHelloClientExtension.create(
-                variant = OuterECHClientHello.create(
-                    cipher_suite = DEFAULT_HPKE_CSUITES[0],
-                    config_id = rgen.randrange(2**8),
-                    enc = rgen.randbytes(32),
-                    payload = rgen.randbytes(239),
-                ),
-            ))
-        case EchOption.REAL:
-            inner_ch = build_client_hello(
-                sni = sni,
-                ciphers = ciphers,
-                kex_groups = kex_groups,
-                kex_share_groups = kex_share_groups,
-                sig_algs = sig_algs,
-                psk_option = psk_option,
-                ticket = ticket,
-                psk_modes = psk_modes,
-                send_time = send_time,
-                rseed = (None if rseed is None else rseed+1),
-                ech_option = EchOption.INNER,
-            )
-            if psk_option == PskOption.TICKET:
-                # if sending actual ticket in inner ch, send grease in outer ch
-                psk_option = PskOption.GREASE
-            # TODO working here
-            raise TlsTODO("real ech extension")
-        case EchOption.INNER:
-            extensions.append(EncryptedClientHelloClientExtension.create(
-                variant = InnerECHClientHello.create(),
-            ))
+    ext_list: list[ClientExtensionVariant] = []
+    for etype in chello_extensions_order:
+        try:
+            ext = extensions[etype]
+        except KeyError:
+            continue
+        ext_list.append(ext)
 
-    # calculate client hello handshake message
+    # calculate client hello handshake message without PSK
     ch = ClientHelloHandshake.create(
         legacy_version     = DEFAULT_LEGACY_VERSION,
         client_random      = rgen.randbytes(32),
-        session_id         = rgen.randbytes(32),
-        ciphers            = (c.value for c in ciphers),
+        session_id         = sesid,
+        ciphers            = ciphers,
         legacy_compression = DEFAULT_LEGACY_COMPRESSION,
-        extensions         = extensions,
+        extensions         = ext_list,
     )
 
     # add PRE_SHARED_KEY extension if requested
     match psk_option:
         case PskOption.NONE:
-            psk = b''
+            psk = None
         case PskOption.GREASE:
+            psk = None
             raise TlsTODO("psk grease")
         case PskOption.TICKET:
             assert ticket is not None
             ch = ticket.add_psk_ext(ch, send_time)
             psk = ticket.secret
 
-    return ch, ClientSecrets.create(kex_sks=kex_sks, psk=psk)
+    if ech_prep:
+        raise TlsTODO("fill in the dummy ech extension and return the inner secrets")
+    else:
+        return ch, ClientSecrets.create(kex_sks=kex_sks, psk=psk, inner_ch=None)
 
 
 @dataclass
@@ -298,7 +321,8 @@ class ClientHandshake(AbstractHandshake, PayloadProcessor):
 
     @classmethod
     def create(cls, ch: ClientHelloHandshake, secrets: ClientSecrets) -> Self:
-        psk: bytes|None = None if not secrets.psk else secrets.psk
+        psk: bytes|None = secrets.psk.uncreate()
+
         need_kex_mode = need_psk = (psk is not None)
 
         # extract some data from the client hello
