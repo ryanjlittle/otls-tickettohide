@@ -93,6 +93,9 @@ def positive_test_cases() -> Iterable[tuple[Spec, Json, str]]:
                      {'name':'GREASE', 'value':0xe4}]},
            '002d0004030b01e4')
     yield B8Raw.create(b''), '', '00'
+    yield (ClientSecrets.create(kex_sks=[], psk=b'abcde', inner_ch=None),
+           {'kex_sks': [], 'psk': '6162636465', 'inner_ch': None},
+           '0000530561626364654e')
 
 def error_test_cases() -> Iterable[tuple[type[Spec], Json, str]]:
     yield Uint8, -3, 'ffff'
