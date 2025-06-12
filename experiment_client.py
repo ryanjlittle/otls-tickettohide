@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 import socket
+from io import BytesIO
 
 from tls_common import *
 from util import pp
@@ -15,12 +16,21 @@ from tls13_spec import (
     Record,
     Version,
     ContentType,
+    Handshake,
     ClientHelloHandshake,
     ServerHelloHandshake,
+    EncryptedExtensionsHandshake,
     ServerNameClientExtension,
+    KeyShareServerExtension,
+    PreSharedKeyServerExtension,
     ECHConfigVariant,
+    ClientSecrets,
 )
 from tls_client import build_client, build_client_hello
+from tls_records import RecordTranscript, RecordReader, DataBuffer
+from tls_keycalc import KeyCalc, HandshakeTranscript
+from tls_crypto import get_hash_alg, get_kex_alg
+from tls_ech import server_accepts_ech
 
 @dataclass
 class RecordStream:
@@ -77,14 +87,86 @@ def get_ech_configs(hostname: str, port: int=443) -> list[ECHConfigVariant]:
         client.connect_socket(csock)
     return client.handshake.ech_configs
 
+def decrypt_ee(cs: ClientSecrets, ch: ClientHelloHandshake, sh: ServerHelloHandshake, eee: Record) -> EncryptedExtensionsHandshake:
+    assert len(cs.kex_sks) == 1
+    hst = HandshakeTranscript()
+    kc = KeyCalc(hst)
+
+    csuite = sh.data.cipher_suite
+    kc.cipher_suite = csuite
+    kc.set_psk(None)
+
+    for ext in sh.data.extensions.uncreate():
+        match ext:
+            case KeyShareServerExtension():
+                group = ext.data.group
+                kex = get_kex_alg(group)
+                private = cs.kex_sks[0]
+                kex_secret = kex.exchange(private, ext.data.pubkey)
+                kc.set_kex_secret(kex_secret)
+            case PreSharedKeyServerExtension():
+                raise ValueError("can't handle PSK here")
+
+    hst.add(ch, True)
+    hst.add(sh, False)
+
+    buf = BytesIO(eee.pack())
+    rt = RecordTranscript(True)
+    adb = DataBuffer()
+    rr = RecordReader(buf, rt, adb)
+    rr.rekey(csuite, kc.server_handshake_traffic_secret)
+
+    ee = rr.get_next_record()
+    assert ee.typ == ContentType.HANDSHAKE
+    match Handshake.unpack_from(LimitReader.from_raw(ee.payload)).variant:
+        case EncryptedExtensionsHandshake() as eeh:
+            return eeh
+        case other:
+            raise ValueError(f"expected ee, got {other}")
+
+
 
 if __name__ == '__main__':
-    hostname = 'defo.ie'
-    port = 443
+    #hostname, port = 'google.com', 443
+    #hostname, port = 'localhost', 8000
+    #hostname, port = 'defo.ie', 443
+    #hostname, port = 'tls-ech.dev', 443
+    #hostname, port = 'opensubtitles.org', 443
+    hostname, port = 'cloudflare-ech.com', 443
+    if False:
+        ch, sec = build_client_hello(sni=hostname)
+        shrec, seerec = ExCl.create(ch, port=port).get_two_records()
+        assert shrec.typ == ContentType.HANDSHAKE
+        sh = ServerHelloHandshake.unpack(shrec.payload)
+        assert seerec.typ == ContentType.APPLICATION_DATA
+        ee = decrypt_ee(sec, ch, sh, seerec)
+        print(f'got ee from {hostname}')
 
-    configs = get_ech_configs(hostname, port)
-    ch, sec = build_client_hello(sni=hostname, ech_config=configs[0])
-    shrec, seerec = ExCl.create(ch).get_two_records()
-    assert shrec.typ == ContentType.HANDSHAKE
-    sh = ServerHelloHandshake.unpack(shrec.payload)
-    assert seerec.typ == ContentType.APPLICATION_DATA
+    if False:
+        configs = get_ech_configs(hostname, port)
+        print(f'got {len(configs)} ech configs from {hostname}')
+        ch, sec = build_client_hello(sni=hostname, ech_config=configs[0])
+        shrec, seerec = ExCl.create(ch, port=port).get_two_records()
+        assert shrec.typ == ContentType.HANDSHAKE
+        sh = ServerHelloHandshake.unpack(shrec.payload)
+        assert seerec.typ == ContentType.APPLICATION_DATA
+        print(f'got two records from {hostname}')
+
+    if True:
+        configs = get_ech_configs(hostname, port)
+        print(f'got {len(configs)} ech configs from {hostname}')
+        ch, sec = build_client_hello(sni=hostname, ech_config=configs[0])
+        inner_ch = sec.inner_ch.data
+        assert inner_ch is not None
+        shrec, seerec = ExCl.create(ch, port=port).get_two_records()
+        assert shrec.typ == ContentType.HANDSHAKE
+        sh = ServerHelloHandshake.unpack(shrec.payload)
+        assert seerec.typ == ContentType.APPLICATION_DATA
+        print(f'got two records from {hostname}')
+        if server_accepts_ech(inner_ch, sh):
+            print(f'SERVER ACCEPTED ECH!!!')
+            ee = decrypt_ee(sec, inner_ch, sh, seerec)
+        else:
+            print('server REJECTED ech')
+            ee = decrypt_ee(sec, ch, sh, seerec)
+        print(f'got ee from {hostname}')

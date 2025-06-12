@@ -7,8 +7,10 @@ import enum
 from spec import LimitReader, UnpackError
 from tls_common import *
 from tls13_spec import (
+    HandshakeTypes,
     ClientHelloHandshake,
     ClientHelloHandshakeData,
+    ServerHelloHandshake,
 
     ECHClientHelloType,
     OuterECHClientHello,
@@ -22,14 +24,17 @@ from tls13_spec import (
     EncryptedClientHelloClientExtension,
     ServerNameClientExtension,
 
-    ClientSecrets,
     HpkeSymmetricCipherSuite,
 )
 from tls_crypto import (
     HpkeAlg,
     ContextS,
     get_hpke_alg,
+    get_hash_alg,
+    hkdf_extract,
+    hkdf_expand_label,
 )
+from tls_keycalc import HandshakeTranscript
 
 class EchType(enum.Enum):
     NONE  = enum.auto()
@@ -66,7 +71,6 @@ def encode_inner(
 class OuterPrep:
     config: ECHConfigVariant
     inner_ch: ClientHelloHandshake
-    _inner_secrets: ClientSecrets
 
     def __post_init__(self) -> None:
         if get_ech_type(self.inner_ch) != EchType.INNER:
@@ -140,10 +144,6 @@ class OuterPrep:
             )
         )
 
-    @cached_property
-    def secrets(self) -> ClientSecrets:
-        return self._inner_secrets.replace(inner_ch = self.inner_ch.uncreate())
-
     def fill_outer(self, outer_ch: ClientHelloHandshake) -> ClientHelloHandshake:
         """Given a complete outer clienthello with a dummy ECH extension,
         fills in the extension ciphertext to complete it."""
@@ -194,3 +194,32 @@ def decode_inner(encoded: bytes, outer: ClientHelloHandshake) -> ClientHelloHand
     if get_ech_type(inner) != EchType.INNER:
         raise ValueError("decoded client hello should have type inner")
     return inner
+
+def ech_confirmation(chello_inner: ClientHelloHandshake, shello: ServerHelloHandshake) -> bytes:
+    hash_alg = get_hash_alg(shello.data.cipher_suite)
+
+    sr2 = shello.data.server_random[:-8] + b'\x00'*8
+    shello2 = shello.replace(server_random = sr2)
+
+    hst = HandshakeTranscript()
+    hst.hash_alg = hash_alg
+    hst.add(hs=chello_inner, from_client=True)
+    hst.add(hs=shello2, from_client=False)
+
+    derived_secret = hkdf_extract(
+        hash_alg = hash_alg,
+        salt     = b'\x00'*hash_alg.digest_size,
+        ikm      = chello_inner.data.client_random,
+    )
+    return hkdf_expand_label(
+        hash_alg = hash_alg,
+        secret   = derived_secret,
+        label    = b'ech accept confirmation',
+        cont     = hst[HandshakeTypes.SERVER_HELLO,False],
+        length   = 8,
+    )
+
+def server_accepts_ech(chello_inner: ClientHelloHandshake, shello: ServerHelloHandshake) -> bool:
+    if get_ech_type(chello_inner) != EchType.INNER:
+        raise ValueError("must use inner client hello to check ech acceptance")
+    return shello.data.server_random[-8:] == ech_confirmation(chello_inner, shello)

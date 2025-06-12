@@ -178,10 +178,37 @@ def build_client_hello(
                     variant = InnerECHClientHello.create(),
                 ))
 
+        # generate key exchange secrets and shares
+        kex_sks: list[bytes] = []
+        shares: list[tuple[NamedGroup, bytes]] = []
+        if kex_share_groups is None:
+            kex_share_groups = kex_groups[:1]
+        for group in kex_share_groups:
+            kex = get_kex_alg(group)
+            secret = kex.gen_private(rgen)
+            share = kex.get_public(secret)
+            kex_sks.append(secret)
+            shares.append((group, share))
+
+        if not shares and ticket is None and ech_prep is None:
+            raise ValueError("need either DHE or PSK (or both), but got neither")
+
+        if shares:
+            # send the DHKE public keys
+            add_ext(KeyShareClientExtension.create(shares))
+
+        psk = None
+        match psk_option:
+            case PskOption.TICKET:
+                assert ticket is not None
+                psk = ticket.secret
+
+        secrets = ClientSecrets.create(kex_sks=kex_sks, psk=psk, inner_ch=None)
+
     else: #ech_config is not None
         if ech_type != EchType.OUTER:
             raise ValueError("ech_config should only be specified for OUTER ech_type")
-        inner_ch, inner_secrets = build_client_hello(
+        inner_ch, secrets = build_client_hello(
             sni = sni,
             ciphers = ciphers,
             kex_groups = kex_groups,
@@ -195,7 +222,16 @@ def build_client_hello(
             ech_type = EchType.INNER,
         )
 
-        ech_prep = OuterPrep(ech_config, inner_ch, inner_secrets)
+        # copy keyshare to outer
+        for ext in inner_ch.data.extensions.uncreate():
+            match ext:
+                case KeyShareClientExtension() as ksext:
+                    add_ext(ksext)
+                    break
+        else:
+            raise ValueError("no KEY_SHARE extension found in inner ch")
+
+        ech_prep = OuterPrep(ech_config, inner_ch)
         add_ext(ech_prep.dummy_ext)
 
         sesid = inner_ch.data.session_id
@@ -205,20 +241,7 @@ def build_client_hello(
             ticket = None
         sni = ech_prep.outer_sni
 
-    # generate key exchange secrets and shares
-    kex_sks: list[bytes] = []
-    shares: list[tuple[NamedGroup, bytes]] = []
-    if kex_share_groups is None:
-        kex_share_groups = kex_groups[:1]
-    for group in kex_share_groups:
-        kex = get_kex_alg(group)
-        secret = kex.gen_private(rgen)
-        share = kex.get_public(secret)
-        kex_sks.append(secret)
-        shares.append((group, share))
-
-    if not shares and ticket is None and ech_prep is None:
-        raise ValueError("need either DHE or PSK (or both), but got neither")
+        secrets = secrets.replace(inner_ch = inner_ch.uncreate())
 
     # fill in client hello extension entries
     if sni is not None:
@@ -263,10 +286,6 @@ def build_client_hello(
             data = b'',
         ))
 
-    if shares:
-        # send the DHKE public keys
-        add_ext(KeyShareClientExtension.create(shares))
-
     ext_list: list[ClientExtensionVariant] = []
     for etype in chello_extensions_order:
         try:
@@ -298,9 +317,9 @@ def build_client_hello(
             psk = ticket.secret
 
     if ech_prep:
-        return ech_prep.fill_outer(ch), ech_prep.secrets
-    else:
-        return ch, ClientSecrets.create(kex_sks=kex_sks, psk=psk, inner_ch=None)
+        ch = ech_prep.fill_outer(ch)
+
+    return ch, secrets
 
 
 @dataclass
