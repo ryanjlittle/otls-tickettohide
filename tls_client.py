@@ -21,7 +21,7 @@ from tls13_spec import (
     Version,
 
     Handshake,
-    HandshakeType,
+    HandshakeTypes,
     HandshakeVariant,
     ClientHelloHandshake,
     ServerHelloHandshake,
@@ -92,7 +92,7 @@ from tls_records import (
     CCS_MESSAGE,
 )
 from tls_keycalc import KeyCalc, HandshakeTranscript, TicketInfo
-from tls_ech import EchType, OuterPrep
+from tls_ech import EchType, OuterPrep, server_accepts_ech
 
 class PskOption(enum.Enum):
     NONE   = enum.auto()
@@ -329,11 +329,16 @@ class ClientHandshake(AbstractHandshake, PayloadProcessor):
     psk            : bytes|None                   = None
     sni            : str|None                     = None
     kexes          : dict[NamedGroup, bytes]      = field(default_factory=dict)
+    inner_ch       : ClientHelloHandshake|None    = None
     psk_modes      : Iterable[PskKeyExchangeMode] = PskKeyExchangeMode.all()
     hs_trans       : HandshakeTranscript          = field(default_factory=HandshakeTranscript)
     key_calc       : KeyCalc                      = field(init=False)
     tickets        : list[TicketInfo]             = field(default_factory=list)
     ech_configs    : list[ECHConfigVariant]       = field(default_factory=list)
+    rreader        : RecordReader|None            = None
+    rwriter        : RecordWriter|None            = None
+    cert_chain     : list[bytes]                  = field(default_factory=list)
+    cert_pubkey    : bytes|None                   = None
 
     def __post_init__(self) -> None:
         self.key_calc = KeyCalc(self.hs_trans)
@@ -350,7 +355,9 @@ class ClientHandshake(AbstractHandshake, PayloadProcessor):
 
         psk_modes = PskKeyExchangeMode.all()
 
-        for ext in ch.data.extensions.uncreate():
+        inner_ch = secrets.inner_ch.data
+
+        for ext in (ch if inner_ch is None else inner_ch).data.extensions.uncreate():
             match ext:
                 case ServerNameClientExtension():
                     try:
@@ -379,6 +386,7 @@ class ClientHandshake(AbstractHandshake, PayloadProcessor):
             sni = sni,
             kexes = kexes,
             psk_modes = psk_modes,
+            inner_ch = inner_ch,
         )
 
     @override
@@ -404,20 +412,25 @@ class ClientHandshake(AbstractHandshake, PayloadProcessor):
     @override
     def begin(self, rreader: RecordReader, rwriter: RecordWriter) -> None:
         assert self.state == ClientStates.START
-        self._rreader = rreader
-        self._rreader.hs_buffer = HandshakeBuffer(owner=self)
-        self._rwriter = rwriter
+        assert self.rreader is None and self.rwriter is None
+        self.rreader = rreader
+        self.rreader.hs_buffer = HandshakeBuffer(owner=self)
+        self.rwriter = rwriter
         self.send_hello()
 
     def _send_hs_msg(self, msg: HandshakeVariant, vers:Version = DEFAULT_LEGACY_VERSION) -> None:
         logger.info(f"sending hs message {msg.typ} to server")
         raw = msg.pack()
-        self._rwriter.send(Record.create(
+        assert self.rwriter is not None
+        self.rwriter.send(Record.create(
             typ     = ContentType.HANDSHAKE,
             version = vers,
             payload = raw,
         ))
-        self.hs_trans.add(hs=msg, from_client=True)
+        if msg.typ == HandshakeTypes.CLIENT_HELLO and self.inner_ch is not None:
+            self.hs_trans.add(hs=self.inner_ch, from_client=True)
+        else:
+            self.hs_trans.add(hs=msg, from_client=True)
 
     def send_hello(self) -> None:
         assert self.state == ClientStates.START
@@ -454,7 +467,13 @@ class ClientHandshake(AbstractHandshake, PayloadProcessor):
             # it's the sha256 hash of 'HelloRetryRequest'
             raise TlsTODO("HelloRetryRequest not yet implemented")
 
-        self._cipher_suite = sh.data.cipher_suite
+        if self.inner_ch is not None:
+            if server_accepts_ech(self.inner_ch, sh):
+                logger.info("ECH accepted and confirmed by server")
+            else:
+                raise TlsError("server rejected true ECH")
+
+        csuite = sh.data.cipher_suite
 
         kex_secret = None
         got_psk = False
@@ -492,16 +511,18 @@ class ClientHandshake(AbstractHandshake, PayloadProcessor):
 
         # inform components of the cipher suite implementation
         try:
-            self._hash_alg = get_hash_alg(self._cipher_suite)
-            self._cipher = get_cipher_alg(self._cipher_suite)
+            get_hash_alg(csuite)
+            get_cipher_alg(csuite)
         except ValueError as e:
-            raise TlsError(f"cipher suite {self._cipher_suite} not supported") from e
-        self.key_calc.cipher_suite = self._cipher_suite
+            raise TlsError(f"cipher suite {csuite} not supported") from e
+        self.key_calc.cipher_suite = csuite
 
         # set up handshake keys
         self.key_calc.set_psk(self.psk)
         self.key_calc.set_kex_secret(kex_secret)
-        self._rreader.rekey(self._cipher_suite, self.key_calc.server_handshake_traffic_secret)
+        assert self.rreader is not None
+        self.rreader.rekey(self.key_calc.cipher_suite,
+                            self.key_calc.server_handshake_traffic_secret)
 
         logger.info(f"Finished processing server hello")
         self.state = ClientStates.WAIT_EE
@@ -530,26 +551,26 @@ class ClientHandshake(AbstractHandshake, PayloadProcessor):
     def _process_cert(self, cert: CertificateHandshake) -> None:
         if cert.data.certificate_request_context:
             raise TlsError(f"certificate_request_context field should be empty")
-        self._cert_chain = []
         for cert_struct in cert.data.certificate_list:
             if cert_struct.extensions:
                 raise TlsError(f"certificate extensions should be empty")
-            self._cert_chain.append(cert_struct.cert_data)
-        logger.info(f"Received a length-{len(self._cert_chain)} certificate chain"
-            f" with lengths {[len(x) for x in self._cert_chain]}")
-        self._cert_pubkey = extract_x509_pubkey(self._cert_chain[0])
+            self.cert_chain.append(cert_struct.cert_data)
+        logger.info(f"Received a length-{len(self.cert_chain)} certificate chain"
+            f" with lengths {[len(x) for x in self.cert_chain]}")
+        self.cert_pubkey = extract_x509_pubkey(self.cert_chain[0])
 
         self.state = ClientStates.WAIT_CV
 
     def _process_cv(self, cv: CertificateVerifyHandshake) -> None:
         logger.info(f"Received a length-{len(cv.data.signature)} sig of type {cv.data.algorithm}")
-        self._sig_alg = cv.data.algorithm
+        sig_alg = cv.data.algorithm
         try:
-            sigscheme = get_sig_alg(self._sig_alg)
+            sigscheme = get_sig_alg(sig_alg)
         except ValueError as e:
-            raise TlsError(f"signature algorithm {self._sig_alg} not supported") from e
+            raise TlsError(f"signature algorithm {sig_alg} not supported") from e
+        assert self.cert_pubkey is not None
         check = sigscheme.verify(
-            pubkey    = self._cert_pubkey,
+            pubkey    = self.cert_pubkey,
             signature = cv.data.signature,
             data      = self.key_calc.server_cv_message,
         )
@@ -566,19 +587,21 @@ class ClientHandshake(AbstractHandshake, PayloadProcessor):
         logger.info(f"Received correct SERVER FINISHED.")
 
         logger.info(f"Sending change cipher spec to server")
-        self._rwriter.send(CCS_MESSAGE)
+        assert self.rwriter is not None
+        self.rwriter.send(CCS_MESSAGE)
 
-        self._rwriter.rekey(self._cipher_suite,
-                            self.key_calc.client_handshake_traffic_secret)
+        self.rwriter.rekey(self.key_calc.cipher_suite,
+                           self.key_calc.client_handshake_traffic_secret)
 
         client_finished = FinishedHandshake.create(self.key_calc.client_finished_verify)
         self._send_hs_msg(client_finished)
         logger.info(f"Sent CLIENT FINISHED. Handshake complete!")
 
-        self._rreader.rekey(self._cipher_suite,
-                            self.key_calc.server_application_traffic_secret)
-        self._rwriter.rekey(self._cipher_suite,
-                            self.key_calc.client_application_traffic_secret)
+        assert self.rreader is not None
+        self.rreader.rekey(self.key_calc.cipher_suite,
+                           self.key_calc.server_application_traffic_secret)
+        self.rwriter.rekey(self.key_calc.cipher_suite,
+                           self.key_calc.client_application_traffic_secret)
 
         self.state = ClientStates.CONNECTED
 

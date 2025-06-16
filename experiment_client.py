@@ -31,6 +31,7 @@ from tls_records import RecordTranscript, RecordReader, DataBuffer
 from tls_keycalc import KeyCalc, HandshakeTranscript
 from tls_crypto import get_hash_alg, get_kex_alg
 from tls_ech import server_accepts_ech
+from https_client import http_get_req
 
 @dataclass
 class RecordStream:
@@ -132,7 +133,8 @@ if __name__ == '__main__':
     #hostname, port = 'defo.ie', 443
     #hostname, port = 'tls-ech.dev', 443
     #hostname, port = 'opensubtitles.org', 443
-    hostname, port = 'cloudflare-ech.com', 443
+    #hostname, port = 'cloudflare-ech.com', 443
+    hostname, port = 'test.defo.ie', 443
     if False:
         ch, sec = build_client_hello(sni=hostname)
         shrec, seerec = ExCl.create(ch, port=port).get_two_records()
@@ -152,7 +154,7 @@ if __name__ == '__main__':
         assert seerec.typ == ContentType.APPLICATION_DATA
         print(f'got two records from {hostname}')
 
-    if True:
+    if False:
         configs = get_ech_configs(hostname, port)
         print(f'got {len(configs)} ech configs from {hostname}')
         ch, sec = build_client_hello(sni=hostname, ech_config=configs[0])
@@ -170,3 +172,22 @@ if __name__ == '__main__':
             print('server REJECTED ech')
             ee = decrypt_ee(sec, ch, sh, seerec)
         print(f'got ee from {hostname}')
+
+    if True:
+        client0 = build_client(sni=hostname)
+        with socket.create_connection((hostname,port)) as csock:
+            client0.connect_socket(csock)
+        assert client0.ech_configs
+        ech_config = client0.ech_configs[0]
+        print("Initial connection successful; got ECH config")
+
+        client = build_client(sni=hostname, ech_config=ech_config)
+        request = http_get_req(hostname, '/')
+        with socket.create_connection((ech_config.data.public_name, port)) as csock:
+            client.connect_socket(csock)
+            client.send(request)
+            response = client.recv(2**16)
+            csock.close()
+        print("Second connection worked! Response below")
+        print()
+        print(response.decode())
