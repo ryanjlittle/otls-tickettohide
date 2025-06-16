@@ -430,7 +430,7 @@ specs: dict[str, GenSpec] = kwdict(
         public = Bounded(32, Raw),
     ),
 
-    TicketInfoStruct = Struct(
+    TicketInfo = Struct(
         ticket_id = Bounded(16, Raw),
         secret = Bounded(8, Raw),
         csuite = 'CipherSuite',
@@ -467,6 +467,20 @@ specs: dict[str, GenSpec] = kwdict(
         kex_sks = Bounded(16, Sequence(Bounded(16, Raw))),
         psk = Maybe(Bounded(8, Raw)),
         inner_ch = Maybe('ClientHelloHandshake'),
+    ),
+
+    ClientOptions = Struct(
+        send_sni = Bool,
+        ciphers = Bounded(8, Sequence('CipherSuite')),
+        kex_shares = Bounded(16, Sequence('NamedGroup')),
+        kex_groups = Bounded(16, Sequence('NamedGroup')),
+        sig_algs = Bounded(16, Sequence('SignatureScheme')),
+        send_psk = Bool,
+        tickets = Bounded(32, Sequence('TicketInfo')),
+        psk_modes = Bounded(8, Sequence('PskKeyExchangeMode')),
+        send_time = Maybe(Uint(64)),
+        send_ech = Bool,
+        ech_configs = Bounded(16, Sequence('ECHConfig')),
     ),
 
     Transcript = Struct(

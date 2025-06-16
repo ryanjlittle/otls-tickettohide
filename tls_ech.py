@@ -83,6 +83,10 @@ class OuterPrep:
                 return cfg.data
         raise ValueError(f"unknown ECH config type {self.config.selector}")
 
+    @cached_property
+    def sesid(self) -> bytes:
+        return self.inner_ch.session_id
+
     @property
     def outer_sni(self) -> str:
         return self._cdata.public_name

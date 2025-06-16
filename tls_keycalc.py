@@ -23,7 +23,7 @@ from tls13_spec import (
     CipherSuite,
     PskKeyExchangeMode,
     Ticket,
-    TicketInfoStruct,
+    TicketInfo,
     ClientExtension,
     PreSharedKeyClientExtension,
     ClientHelloHandshake,
@@ -44,43 +44,36 @@ from tls_crypto import (
     DEFAULT_KEX_MODES,
 )
 
+def current_time_milli() -> int:
+    return int(time.time() * 1000)
 
-@dataclass(frozen=True)
-class TicketInfo(TicketInfoStruct):
-    def add_psk_ext(self, chello: ClientHelloHandshake, send_time: float|None = None) -> ClientHelloHandshake:
-        """Returns a new ClientHello Hansshake object with the PSK extension filled in."""
-        extensions: list[ClientExtensionVariant] = list(chello.data.extensions.uncreate())
-        if any(ext.typ == ExtensionTypes.PRE_SHARED_KEY for ext in extensions):
-            raise ValueError(f"client hello should not contain PSK extension yet")
+@dataclass
+class PskExtFactory:
+    """Class to add a PSK extension to a given client hello."""
+    send_psk: bool
+    ticket: TicketInfo|None
+    send_time: int|None
+    rgen: Random
+    force_grease: bool = False
 
-        # compute values for dummy psk extension
-        if send_time is None:
-            send_time = time.time()
-        oage = (round((send_time - self.creation) * 1000) + self.mask) % 2**32
-        dummy_binder = b'\xdd' * get_hash_alg(self.csuite).digest_size
+    @property
+    def id_length(self) -> int:
+        return 16 if self.ticket is None else len(self.ticket.ticket_id)
 
-        # construct extension with dummy binder
-        dummy_psk_ext = PreSharedKeyClientExtension.create(
-            identities = [(self.ticket_id, oage)],
-            binders = [dummy_binder],
-        )
+    @property
+    def real_ticket(self) -> TicketInfo|None:
+        return None if self.force_grease else self.ticket
 
-        # add dummy extension to chello
-        dummy_chello = chello.replace(extensions = extensions + [dummy_psk_ext])
+    @property
+    def secret(self) -> bytes|None:
+        rt = self.real_ticket
+        return None if rt is None else rt.secret
 
-        # compute actual binder key and psk extension
-        actual_binder = self.get_binder_key(dummy_chello)
-        actual_psk_ext = dummy_psk_ext.replace(binders = [actual_binder])
-        actual_chello = chello.replace(extensions = extensions + [actual_psk_ext])
-
-        logger.info(f'inserting psk with id {self.ticket_id[:12].hex()}... and  binder {actual_binder.hex()} into client hello')
-        return actual_chello
-
-    def get_binder_key(self, chello: ClientHelloHandshake, prefix:Iterable[tuple[HandshakeVariant,bool]]=()) -> bytes:
+    def get_binder_key(self, chello: ClientHelloHandshake) -> bytes:
         """Computes the binder key for this ticket within the given (unpacked) client hello.
-
-        prefix is (optionally) a transcript prefix, e.g. from a hello retry.
         """
+        rt = self.real_ticket
+        assert rt is not None
 
         # find the index
         for ext in chello.data.extensions.uncreate():
@@ -91,12 +84,57 @@ class TicketInfo(TicketInfoStruct):
             raise TlsError("no PSK extension found in ClientHello")
 
         for index, ident in enumerate(psk_ext.data.identities):
-            if ident.identity == self.ticket_id:
+            if ident.identity == rt.ticket_id:
                 break
         else:
-            raise TlsError(f"ticket {pformat(self.ticket_id)} not found in given PSK extension; got {[pformat(ident.identity) for ident in psk_ext.data.identities]}")
+            raise TlsError(f"ticket {pformat(rt.ticket_id)} not found in given PSK extension; got {[pformat(ident.identity) for ident in psk_ext.data.identities]}")
 
-        return calc_binder_key(chello, index, self.secret, self.csuite, prefix)
+        return calc_binder_key(chello, index, rt.secret, rt.csuite, ())
+
+    def __call__(self, chello: ClientHelloHandshake) -> ClientHelloHandshake:
+        """Returns a new ClientHello Handshake object with the PSK extension filled in."""
+
+        if not self.send_psk:
+            return chello
+
+        extensions: list[ClientExtensionVariant] = list(chello.data.extensions.uncreate())
+        if any(ext.typ == ExtensionTypes.PRE_SHARED_KEY for ext in extensions):
+            raise ValueError(f"client hello should not contain PSK extension yet")
+
+        binder_length = get_hash_alg(self.ticket.csuite).digest_size
+
+        match self.real_ticket:
+            case None:
+                # send random values as GREASE extension
+                actual_psk_ext = PreSharedKeyClientExtension.create(
+                    identities = [(rgen.randbytes(self.id_length),
+                                rgen.randrange(2**32))],
+                    binders = [rgen.randbytes(binder_length)],
+                )
+                logger.info(f'inserting GREASE psk into client hello')
+            case TicketInfo() as rt:
+                # compute values for dummy psk extension
+                if send_time is None:
+                    send_time = current_time_milli()
+                oage = (send_time - rt.creation + rt.mask) % 2**32
+                dummy_binder = b'\xdd' * binder_length
+
+                # construct extension with dummy binder
+                dummy_psk_ext = PreSharedKeyClientExtension.create(
+                    identities = [(ticket.ticket_id, oage)],
+                    binders = [dummy_binder],
+                )
+
+                # add dummy extension to chello
+                dummy_chello = chello.replace(extensions = extensions + [dummy_psk_ext])
+
+                # compute actual binder key and psk extension
+                actual_binder = self.get_binder_key(dummy_chello)
+                actual_psk_ext = dummy_psk_ext.replace(binders = [actual_binder])
+
+                logger.info(f'inserting psk with id {self.ticket.ticket_id[:12].hex()}... and  binder {actual_binder.hex()} into client hello')
+
+        return chello.replace(extensions = extensions + [actual_psk_ext])
 
 HSTLookup = tuple[HandshakeTypes,bool] | HandshakeTypes | int
 
@@ -309,7 +347,7 @@ class KeyCalc:
             modes     = modes,
             mask      = ticket.ticket_age_add,
             lifetime  = ticket.ticket_lifetime,
-            creation  = (round(time.time()) if creation is None else creation),
+            creation  = current_time_milli() if creation is None else creation,
         )
 
     def get_verify_data(self, base_key: bytes, transcript_hash: bytes) -> bytes:
