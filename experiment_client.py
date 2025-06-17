@@ -134,7 +134,8 @@ if __name__ == '__main__':
     #hostname, port = 'tls-ech.dev', 443
     #hostname, port = 'opensubtitles.org', 443
     #hostname, port = 'cloudflare-ech.com', 443
-    hostname, port = 'test.defo.ie', 443
+    #hostname, port = 'test.defo.ie', 443
+    hostname, port = 'www.w3.org', 443
     if False:
         ch, sec = build_client_hello(sni=hostname)
         shrec, seerec = ExCl.create(ch, port=port).get_two_records()
