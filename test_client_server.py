@@ -8,12 +8,14 @@ import socket
 from concurrent.futures import ThreadPoolExecutor, Executor
 from contextlib import contextmanager
 import argparse
+import traceback
 import logging
 
-from tls_client import build_client
+from tls13_spec import ClientOptions, TicketInfo
+from tls_client import build_client, DEFAULT_CLIENT_OPTIONS
 from tls_server import Server
 from tls_crypto import gen_server_secrets
-from tls_keycalc import ServerTicketer, TicketInfo
+from tls_keycalc import ServerTicketer
 
 logger = logging.getLogger('test_client_server')
 
@@ -56,10 +58,10 @@ class ClientTest:
         self._hostname = hostname
         self._port = port
 
-    def go(self, in_msgs: Iterable[bytes], out_msgs: Iterable[bytes], **ch_args: Any) -> Iterable[TicketInfo]:
+    def go(self, in_msgs: Iterable[bytes], out_msgs: Iterable[bytes], options: ClientOptions, rseed: int|None) -> Iterable[TicketInfo]:
         try:
             logger.info(f'client trying to connect and send messages')
-            client = build_client(sni=self._hostname, **ch_args)
+            client = build_client(hostname=self._hostname, options=options, rseed=rseed)
             inmit = iter(in_msgs)
             outit = iter(out_msgs)
             with socket.create_connection((self._hostname, self._port), timeout=1) as sock:
@@ -81,6 +83,7 @@ class ClientTest:
             return client.tickets
         except Exception as e:
             logger.error(f'CLIENT FAILED WITH ERROR: {e}')
+            logger.error(traceback.format_exc())
             raise
 
 
@@ -91,11 +94,11 @@ class _CSTester:
         self._ssock = ssock
         self._executor = executor
 
-    def __call__(self, requests: Iterable[bytes], replies: Iterable[bytes], rseed:int|None=None, **ch_args: Any) -> Iterable[TicketInfo]:
+    def __call__(self, requests: Iterable[bytes], replies: Iterable[bytes], options:ClientOptions=DEFAULT_CLIENT_OPTIONS, rseed:int|None=None) -> Iterable[TicketInfo]:
         logger.info('starting server for test run')
         sgo = self._executor.submit(self._svt.go, self._ssock, requests, replies, rseed)
         logger.info('starting client for test run')
-        cgo = self._executor.submit(self._clt.go, replies, requests, rseed=rseed, **ch_args)
+        cgo = self._executor.submit(self._clt.go, replies, requests, options=options, rseed=rseed)
         sgo.result()
         logger.info('server finished test run')
         tiks = cgo.result()
@@ -121,8 +124,9 @@ def do_tests(hostname:str='localhost', port:int=12345) -> None:
         assert len(tiks) >= 1, 'did not receive any tickets'
         logger.info('TEST SUCCESS for 2-round getting tickets')
 
+        tik_opt = DEFAULT_CLIENT_OPTIONS.replace(send_psk=True,tickets=[tiks[0].uncreate()])
         logger.info('starting ticket redemption test')
-        trun([b'a', b'b', b'c'], [b'd', b'e', b'f'], ticket=tiks[0])
+        trun([b'a', b'b', b'c'], [b'd', b'e', b'f'], options=tik_opt)
         logger.info('TEST SUCCESS for 3-round using ticket')
 
 

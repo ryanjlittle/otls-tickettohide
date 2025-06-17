@@ -4159,7 +4159,7 @@ class Uint64(spec._Integral):
     _BYTE_LENGTH = 8
 
 @dataclass(frozen=True)
-class TicketInfoStruct(spec._StructBase):
+class TicketInfo(spec._StructBase):
     _member_names: ClassVar[tuple[str,...]] = ('ticket_id','secret','csuite','modes','mask','lifetime','creation',)
     _member_types: ClassVar[tuple[type[Spec],...]] = (B16Raw,B8Raw,CipherSuite,B8SeqPskKeyExchangeMode,Uint32,Uint32,Uint64,)
     ticket_id: B16Raw
@@ -4357,6 +4357,189 @@ class ClientSecrets(spec._StructBase):
 
     def uncreate(self) -> tuple[Iterable[bytes], bytes|None, tuple[int|Version,bytes,bytes,Iterable[int|CipherSuite],Iterable[int],Iterable[ClientExtensionVariant]]|None]:
         return (self.kex_sks.uncreate(), self.psk.uncreate(), self.inner_ch.uncreate())
+
+class B8SeqCipherSuite(BoundedSeqCipherSuite):
+    _LENGTH_TYPES = (Uint8, )
+
+class B16SeqNamedGroup(BoundedSeqNamedGroup):
+    _LENGTH_TYPES = (Uint16, )
+
+class B16SeqSignatureScheme(BoundedSeqSignatureScheme):
+    _LENGTH_TYPES = (Uint16, )
+
+class SeqTicketInfo(spec._Sequence[TicketInfo]):
+    _ITEM_TYPE = TicketInfo
+
+    @classmethod
+    def create(cls, items: Iterable[tuple[bytes,bytes,int|CipherSuite,Iterable[int|PskKeyExchangeMode],int,int,int]]) -> Self:
+        return cls(TicketInfo.create(*item) for item in items)
+
+    def uncreate(self) -> Iterable[tuple[bytes,bytes,int|CipherSuite,Iterable[int|PskKeyExchangeMode],int,int,int]]:
+        for item in self:
+            yield item.uncreate()
+
+class BoundedSeqTicketInfo(SeqTicketInfo, Spec):
+    _LENGTH_TYPES: tuple[type[spec._Integral],...]
+
+    @override
+    def packed_size(self) -> int:
+        return sum(LT._BYTE_LENGTH for LT in self._LENGTH_TYPES) + super().packed_size()
+
+    @override
+    def pack(self) -> bytes:
+        raw = super().pack()
+        length = len(raw)
+        parts = [raw]
+        for LT in reversed(self._LENGTH_TYPES):
+            parts.append(LT(length).pack())
+            length += LT._BYTE_LENGTH
+        parts.reverse()
+        return b''.join(parts)
+
+    @override
+    def pack_to(self, dest: BinaryIO) -> int:
+        return Spec.pack_to(self, dest)
+
+    @override
+    @classmethod
+    def unpack(cls, raw: bytes) -> Self:
+        offset = 0
+        for LT in cls._LENGTH_TYPES:
+            lenlen = LT._BYTE_LENGTH
+            if len(raw) < offset + lenlen:
+                raise ValueError
+            length = LT.unpack(raw[offset:offset+lenlen])
+            if len(raw) != offset + lenlen + length:
+                raise ValueError
+            offset += lenlen
+        try:
+            return super().unpack(raw[offset:])
+        except UnpackError as e:
+            raise e.above(raw, {'bounded_size': length, 'data': e.partial}) from e
+
+    @override
+    @classmethod
+    def unpack_from(cls, src: LimitReader) -> Self:
+        lit = iter(cls._LENGTH_TYPES)
+        length = next(lit).unpack_from(src)
+        for LT in lit:
+            len2 = LT.unpack_from(src)
+            if length != LT._BYTE_LENGTH + len2:
+                raise UnpackError(src.got, f"bounded length should have been {length - LT._BYTE_LENGTH} but got {len2}")
+            length = len2
+        supraw = src.read(length)
+        try:
+            return super().unpack(supraw)
+        except UnpackError as e:
+            raise e.above(src.got, {'bounded_size': length, 'data': e.partial}) from e
+
+class B32SeqTicketInfo(BoundedSeqTicketInfo):
+    _LENGTH_TYPES = (Uint32, )
+
+class MaybeUint64(spec._Maybe[Uint64]):
+    _DATA_TYPE = Uint64
+
+    @classmethod
+    def create(cls, data: int|None = None) -> Self:
+        return cls(data=(None if data is None else Uint64.create(data)))
+
+    def uncreate(self) -> int|None:
+        return None if self._data is None else self._data.uncreate()
+
+class SeqECHConfig(spec._Sequence[ECHConfig]):
+    _ITEM_TYPE = ECHConfig
+
+    @classmethod
+    def create(cls, items: Iterable[ECHConfigVariant]) -> Self:
+        return cls(ECHConfig.create(item) for item in items)
+
+    def uncreate(self) -> Iterable[ECHConfigVariant]:
+        for item in self:
+            yield item.uncreate()
+
+class BoundedSeqECHConfig(SeqECHConfig, Spec):
+    _LENGTH_TYPES: tuple[type[spec._Integral],...]
+
+    @override
+    def packed_size(self) -> int:
+        return sum(LT._BYTE_LENGTH for LT in self._LENGTH_TYPES) + super().packed_size()
+
+    @override
+    def pack(self) -> bytes:
+        raw = super().pack()
+        length = len(raw)
+        parts = [raw]
+        for LT in reversed(self._LENGTH_TYPES):
+            parts.append(LT(length).pack())
+            length += LT._BYTE_LENGTH
+        parts.reverse()
+        return b''.join(parts)
+
+    @override
+    def pack_to(self, dest: BinaryIO) -> int:
+        return Spec.pack_to(self, dest)
+
+    @override
+    @classmethod
+    def unpack(cls, raw: bytes) -> Self:
+        offset = 0
+        for LT in cls._LENGTH_TYPES:
+            lenlen = LT._BYTE_LENGTH
+            if len(raw) < offset + lenlen:
+                raise ValueError
+            length = LT.unpack(raw[offset:offset+lenlen])
+            if len(raw) != offset + lenlen + length:
+                raise ValueError
+            offset += lenlen
+        try:
+            return super().unpack(raw[offset:])
+        except UnpackError as e:
+            raise e.above(raw, {'bounded_size': length, 'data': e.partial}) from e
+
+    @override
+    @classmethod
+    def unpack_from(cls, src: LimitReader) -> Self:
+        lit = iter(cls._LENGTH_TYPES)
+        length = next(lit).unpack_from(src)
+        for LT in lit:
+            len2 = LT.unpack_from(src)
+            if length != LT._BYTE_LENGTH + len2:
+                raise UnpackError(src.got, f"bounded length should have been {length - LT._BYTE_LENGTH} but got {len2}")
+            length = len2
+        supraw = src.read(length)
+        try:
+            return super().unpack(supraw)
+        except UnpackError as e:
+            raise e.above(src.got, {'bounded_size': length, 'data': e.partial}) from e
+
+class B16SeqECHConfig(BoundedSeqECHConfig):
+    _LENGTH_TYPES = (Uint16, )
+
+@dataclass(frozen=True)
+class ClientOptions(spec._StructBase):
+    _member_names: ClassVar[tuple[str,...]] = ('send_sni','ciphers','kex_shares','kex_groups','sig_algs','send_psk','tickets','psk_modes','send_time','send_ech','ech_configs',)
+    _member_types: ClassVar[tuple[type[Spec],...]] = (spec.Bool,B8SeqCipherSuite,B16SeqNamedGroup,B16SeqNamedGroup,B16SeqSignatureScheme,spec.Bool,B32SeqTicketInfo,B8SeqPskKeyExchangeMode,MaybeUint64,spec.Bool,B16SeqECHConfig,)
+    send_sni: spec.Bool
+    ciphers: B8SeqCipherSuite
+    kex_shares: B16SeqNamedGroup
+    kex_groups: B16SeqNamedGroup
+    sig_algs: B16SeqSignatureScheme
+    send_psk: spec.Bool
+    tickets: B32SeqTicketInfo
+    psk_modes: B8SeqPskKeyExchangeMode
+    send_time: MaybeUint64
+    send_ech: spec.Bool
+    ech_configs: B16SeqECHConfig
+
+    def replace(self, send_sni:bool|None=None, ciphers:Iterable[int|CipherSuite]|None=None, kex_shares:Iterable[int|NamedGroup]|None=None, kex_groups:Iterable[int|NamedGroup]|None=None, sig_algs:Iterable[int|SignatureScheme]|None=None, send_psk:bool|None=None, tickets:Iterable[tuple[bytes,bytes,int|CipherSuite,Iterable[int|PskKeyExchangeMode],int,int,int]]|None=None, psk_modes:Iterable[int|PskKeyExchangeMode]|None=None, send_time:int|None|None=None, send_ech:bool|None=None, ech_configs:Iterable[ECHConfigVariant]|None=None) -> Self:
+        return type(self)((self.send_sni if send_sni is None else spec.Bool.create(send_sni)), (self.ciphers if ciphers is None else B8SeqCipherSuite.create(ciphers)), (self.kex_shares if kex_shares is None else B16SeqNamedGroup.create(kex_shares)), (self.kex_groups if kex_groups is None else B16SeqNamedGroup.create(kex_groups)), (self.sig_algs if sig_algs is None else B16SeqSignatureScheme.create(sig_algs)), (self.send_psk if send_psk is None else spec.Bool.create(send_psk)), (self.tickets if tickets is None else B32SeqTicketInfo.create(tickets)), (self.psk_modes if psk_modes is None else B8SeqPskKeyExchangeMode.create(psk_modes)), (self.send_time if send_time is None else MaybeUint64.create(send_time)), (self.send_ech if send_ech is None else spec.Bool.create(send_ech)), (self.ech_configs if ech_configs is None else B16SeqECHConfig.create(ech_configs)))
+
+    @classmethod
+    def create(cls,send_sni:bool,ciphers:Iterable[int|CipherSuite],kex_shares:Iterable[int|NamedGroup],kex_groups:Iterable[int|NamedGroup],sig_algs:Iterable[int|SignatureScheme],send_psk:bool,tickets:Iterable[tuple[bytes,bytes,int|CipherSuite,Iterable[int|PskKeyExchangeMode],int,int,int]],psk_modes:Iterable[int|PskKeyExchangeMode],send_time:int|None,send_ech:bool,ech_configs:Iterable[ECHConfigVariant]) -> Self:
+        return cls(send_sni=spec.Bool.create(send_sni), ciphers=B8SeqCipherSuite.create(ciphers), kex_shares=B16SeqNamedGroup.create(kex_shares), kex_groups=B16SeqNamedGroup.create(kex_groups), sig_algs=B16SeqSignatureScheme.create(sig_algs), send_psk=spec.Bool.create(send_psk), tickets=B32SeqTicketInfo.create(tickets), psk_modes=B8SeqPskKeyExchangeMode.create(psk_modes), send_time=MaybeUint64.create(send_time), send_ech=spec.Bool.create(send_ech), ech_configs=B16SeqECHConfig.create(ech_configs))
+
+    def uncreate(self) -> tuple[bool, Iterable[int|CipherSuite], Iterable[int|NamedGroup], Iterable[int|NamedGroup], Iterable[int|SignatureScheme], bool, Iterable[tuple[bytes,bytes,int|CipherSuite,Iterable[int|PskKeyExchangeMode],int,int,int]], Iterable[int|PskKeyExchangeMode], int|None, bool, Iterable[ECHConfigVariant]]:
+        return (self.send_sni.uncreate(), self.ciphers.uncreate(), self.kex_shares.uncreate(), self.kex_groups.uncreate(), self.sig_algs.uncreate(), self.send_psk.uncreate(), self.tickets.uncreate(), self.psk_modes.uncreate(), self.send_time.uncreate(), self.send_ech.uncreate(), self.ech_configs.uncreate())
 
 class SeqRecordEntry(spec._Sequence[RecordEntry]):
     _ITEM_TYPE = RecordEntry
