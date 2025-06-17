@@ -24,13 +24,14 @@ def http_get_req(hostname: str, path: str = '/') -> bytes:
 
 def query_response(
     hostname: str,
-    port    : int         = 443,
-    timeout : float|None  = None,
-    client  : Client|None = None
+    port    : int           = 443,
+    timeout : float|None    = None,
+    options : ClientOptions = DEFAULT_CLIENT_OPTIONS,
+    client  : Client|None   = None
 ) -> bytes:
     if client is None:
         logger.info(f'building client hello with sni {hostname}')
-        client = build_client(sni=hostname)
+        client = build_client(sni=hostname, options=options)
     request = http_get_req(hostname, path)
     worked = False
     with socket.create_connection((hostname, port), timeout=timeout) as sock:
@@ -43,7 +44,7 @@ def query_response(
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description = 'Connect to an HTTPS server using TLS 1.3 and make a GET request.',
+        description = 'Connect to a server using TLS 1.3, send query, and return response.',
     )
     parser.add_argument('hostname')
     parser.add_argument('-p', '--port', type=int, default=443)

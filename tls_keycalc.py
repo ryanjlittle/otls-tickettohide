@@ -5,6 +5,7 @@ Includes code for pre-shared keys (i.e. tickets)."""
 import time
 import json
 import os
+from random import Random
 from dataclasses import dataclass, field
 from collections.abc import Iterable
 from functools import cached_property
@@ -91,7 +92,7 @@ class PskExtFactory:
 
         return calc_binder_key(chello, index, rt.secret, rt.csuite, ())
 
-    def __call__(self, chello: ClientHelloHandshake) -> ClientHelloHandshake:
+    def add_to_ch(self, chello: ClientHelloHandshake) -> ClientHelloHandshake:
         """Returns a new ClientHello Handshake object with the PSK extension filled in."""
 
         if not self.send_psk:
@@ -101,27 +102,29 @@ class PskExtFactory:
         if any(ext.typ == ExtensionTypes.PRE_SHARED_KEY for ext in extensions):
             raise ValueError(f"client hello should not contain PSK extension yet")
 
-        binder_length = get_hash_alg(self.ticket.csuite).digest_size
+        if self.ticket is None:
+            binder_length = 32
+        else:
+            binder_length = get_hash_alg(self.ticket.csuite).digest_size
 
         match self.real_ticket:
             case None:
                 # send random values as GREASE extension
                 actual_psk_ext = PreSharedKeyClientExtension.create(
-                    identities = [(rgen.randbytes(self.id_length),
-                                rgen.randrange(2**32))],
-                    binders = [rgen.randbytes(binder_length)],
+                    identities = [(self.rgen.randbytes(self.id_length),
+                                self.rgen.randrange(2**32))],
+                    binders = [self.rgen.randbytes(binder_length)],
                 )
                 logger.info(f'inserting GREASE psk into client hello')
             case TicketInfo() as rt:
                 # compute values for dummy psk extension
-                if send_time is None:
-                    send_time = current_time_milli()
-                oage = (send_time - rt.creation + rt.mask) % 2**32
+                oage = ((current_time_milli() if self.send_time is None else self.send_time)
+                        - rt.creation + rt.mask) % 2**32
                 dummy_binder = b'\xdd' * binder_length
 
                 # construct extension with dummy binder
                 dummy_psk_ext = PreSharedKeyClientExtension.create(
-                    identities = [(ticket.ticket_id, oage)],
+                    identities = [(rt.ticket_id, oage)],
                     binders = [dummy_binder],
                 )
 
@@ -132,7 +135,7 @@ class PskExtFactory:
                 actual_binder = self.get_binder_key(dummy_chello)
                 actual_psk_ext = dummy_psk_ext.replace(binders = [actual_binder])
 
-                logger.info(f'inserting psk with id {self.ticket.ticket_id[:12].hex()}... and  binder {actual_binder.hex()} into client hello')
+                logger.info(f'inserting psk with id {rt.ticket_id[:12].hex()}... and  binder {actual_binder.hex()} into client hello')
 
         return chello.replace(extensions = extensions + [actual_psk_ext])
 

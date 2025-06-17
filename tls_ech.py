@@ -85,7 +85,7 @@ class OuterPrep:
 
     @cached_property
     def sesid(self) -> bytes:
-        return self.inner_ch.session_id
+        return self.inner_ch.data.session_id
 
     @property
     def outer_sni(self) -> str:

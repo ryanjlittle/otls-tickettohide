@@ -4159,7 +4159,7 @@ class Uint64(spec._Integral):
     _BYTE_LENGTH = 8
 
 @dataclass(frozen=True)
-class TicketInfoStruct(spec._StructBase):
+class TicketInfo(spec._StructBase):
     _member_names: ClassVar[tuple[str,...]] = ('ticket_id','secret','csuite','modes','mask','lifetime','creation',)
     _member_types: ClassVar[tuple[type[Spec],...]] = (B16Raw,B8Raw,CipherSuite,B8SeqPskKeyExchangeMode,Uint32,Uint32,Uint64,)
     ticket_id: B16Raw
@@ -4371,12 +4371,12 @@ class SeqTicketInfo(spec._Sequence[TicketInfo]):
     _ITEM_TYPE = TicketInfo
 
     @classmethod
-    def create(cls, items: Iterable[TicketInfo]) -> Self:
-        return cls(item for item in items)
+    def create(cls, items: Iterable[tuple[bytes,bytes,int|CipherSuite,Iterable[int|PskKeyExchangeMode],int,int,int]]) -> Self:
+        return cls(TicketInfo.create(*item) for item in items)
 
-    def uncreate(self) -> Iterable[TicketInfo]:
+    def uncreate(self) -> Iterable[tuple[bytes,bytes,int|CipherSuite,Iterable[int|PskKeyExchangeMode],int,int,int]]:
         for item in self:
-            yield item
+            yield item.uncreate()
 
 class BoundedSeqTicketInfo(SeqTicketInfo, Spec):
     _LENGTH_TYPES: tuple[type[spec._Integral],...]
@@ -4531,14 +4531,14 @@ class ClientOptions(spec._StructBase):
     send_ech: spec.Bool
     ech_configs: B16SeqECHConfig
 
-    def replace(self, send_sni:bool|None=None, ciphers:Iterable[int|CipherSuite]|None=None, kex_shares:Iterable[int|NamedGroup]|None=None, kex_groups:Iterable[int|NamedGroup]|None=None, sig_algs:Iterable[int|SignatureScheme]|None=None, send_psk:bool|None=None, tickets:Iterable[TicketInfo]|None=None, psk_modes:Iterable[int|PskKeyExchangeMode]|None=None, send_time:int|None|None=None, send_ech:bool|None=None, ech_configs:Iterable[ECHConfigVariant]|None=None) -> Self:
+    def replace(self, send_sni:bool|None=None, ciphers:Iterable[int|CipherSuite]|None=None, kex_shares:Iterable[int|NamedGroup]|None=None, kex_groups:Iterable[int|NamedGroup]|None=None, sig_algs:Iterable[int|SignatureScheme]|None=None, send_psk:bool|None=None, tickets:Iterable[tuple[bytes,bytes,int|CipherSuite,Iterable[int|PskKeyExchangeMode],int,int,int]]|None=None, psk_modes:Iterable[int|PskKeyExchangeMode]|None=None, send_time:int|None|None=None, send_ech:bool|None=None, ech_configs:Iterable[ECHConfigVariant]|None=None) -> Self:
         return type(self)((self.send_sni if send_sni is None else spec.Bool.create(send_sni)), (self.ciphers if ciphers is None else B8SeqCipherSuite.create(ciphers)), (self.kex_shares if kex_shares is None else B16SeqNamedGroup.create(kex_shares)), (self.kex_groups if kex_groups is None else B16SeqNamedGroup.create(kex_groups)), (self.sig_algs if sig_algs is None else B16SeqSignatureScheme.create(sig_algs)), (self.send_psk if send_psk is None else spec.Bool.create(send_psk)), (self.tickets if tickets is None else B32SeqTicketInfo.create(tickets)), (self.psk_modes if psk_modes is None else B8SeqPskKeyExchangeMode.create(psk_modes)), (self.send_time if send_time is None else MaybeUint64.create(send_time)), (self.send_ech if send_ech is None else spec.Bool.create(send_ech)), (self.ech_configs if ech_configs is None else B16SeqECHConfig.create(ech_configs)))
 
     @classmethod
-    def create(cls,send_sni:bool,ciphers:Iterable[int|CipherSuite],kex_shares:Iterable[int|NamedGroup],kex_groups:Iterable[int|NamedGroup],sig_algs:Iterable[int|SignatureScheme],send_psk:bool,tickets:Iterable[TicketInfo],psk_modes:Iterable[int|PskKeyExchangeMode],send_time:int|None,send_ech:bool,ech_configs:Iterable[ECHConfigVariant]) -> Self:
+    def create(cls,send_sni:bool,ciphers:Iterable[int|CipherSuite],kex_shares:Iterable[int|NamedGroup],kex_groups:Iterable[int|NamedGroup],sig_algs:Iterable[int|SignatureScheme],send_psk:bool,tickets:Iterable[tuple[bytes,bytes,int|CipherSuite,Iterable[int|PskKeyExchangeMode],int,int,int]],psk_modes:Iterable[int|PskKeyExchangeMode],send_time:int|None,send_ech:bool,ech_configs:Iterable[ECHConfigVariant]) -> Self:
         return cls(send_sni=spec.Bool.create(send_sni), ciphers=B8SeqCipherSuite.create(ciphers), kex_shares=B16SeqNamedGroup.create(kex_shares), kex_groups=B16SeqNamedGroup.create(kex_groups), sig_algs=B16SeqSignatureScheme.create(sig_algs), send_psk=spec.Bool.create(send_psk), tickets=B32SeqTicketInfo.create(tickets), psk_modes=B8SeqPskKeyExchangeMode.create(psk_modes), send_time=MaybeUint64.create(send_time), send_ech=spec.Bool.create(send_ech), ech_configs=B16SeqECHConfig.create(ech_configs))
 
-    def uncreate(self) -> tuple[bool, Iterable[int|CipherSuite], Iterable[int|NamedGroup], Iterable[int|NamedGroup], Iterable[int|SignatureScheme], bool, Iterable[TicketInfo], Iterable[int|PskKeyExchangeMode], int|None, bool, Iterable[ECHConfigVariant]]:
+    def uncreate(self) -> tuple[bool, Iterable[int|CipherSuite], Iterable[int|NamedGroup], Iterable[int|NamedGroup], Iterable[int|SignatureScheme], bool, Iterable[tuple[bytes,bytes,int|CipherSuite,Iterable[int|PskKeyExchangeMode],int,int,int]], Iterable[int|PskKeyExchangeMode], int|None, bool, Iterable[ECHConfigVariant]]:
         return (self.send_sni.uncreate(), self.ciphers.uncreate(), self.kex_shares.uncreate(), self.kex_groups.uncreate(), self.sig_algs.uncreate(), self.send_psk.uncreate(), self.tickets.uncreate(), self.psk_modes.uncreate(), self.send_time.uncreate(), self.send_ech.uncreate(), self.ech_configs.uncreate())
 
 class SeqRecordEntry(spec._Sequence[RecordEntry]):
