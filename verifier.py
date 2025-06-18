@@ -121,6 +121,9 @@ class Verifier(ABC):
 
     def _2pc_hkdf(self):
         assert self._state == VerifierState.WAIT_2PC_HKDF
+
+        master_secrets = self._crypto_manager.get_master_secrets()
+        self._prover_conn.send_msg(VerifierMsgType.MASTER_SECRETS, master_secrets)
         self._increment_state()
 
     def _process_commitment(self):

@@ -6,9 +6,10 @@ from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from enum import IntEnum
 
+from mpc_tls import TrustedParty
 from proof_common import *
 from proof_connections import VerifierConnection, obtain_tickets
-from proof_crypto import ProverClientPhase1
+from proof_crypto import ProverClient
 from proof_spec import VerifierMsgType, VerifierMsg, ProverMsgType
 from tls13_spec import CipherSuite, NamedGroup
 from tls_common import *
@@ -54,7 +55,7 @@ class Prover(ABC):
         self._rseed = rseed
         self._num_servers = len(server_ids)
 
-        self._clients = [ProverClientPhase1(sid, ciphersuite, group, rseed) for sid in self._server_ids]
+        self._clients = [ProverClient(sid, ciphersuite, group, rseed) for sid in self._server_ids]
         self._verifier_connection = VerifierConnection(self.host, self._pport)
 
         self.listening = False
@@ -187,7 +188,25 @@ class Prover(ABC):
         self._increment_state()
 
     def _2pc_HKDF(self):
+        '''This is currently using a trusted party, need to replace this with real 2PC'''
         assert self._state == ProverState.WAIT_2PC_HKDF
+
+        msg = self._verifier_connection.recv_msg()
+        if msg.typ != VerifierMsgType.MASTER_SECRETS:
+            raise ProverError(f'received unexpected message from verifier.')
+
+        master_secrets = msg.body
+
+        self._trusted_party = TrustedParty()
+        self._trusted_party.server_idx = self._real_idx
+        self._trusted_party.hash5 = self._clients[self._real_idx].get_hash5()
+        self._trusted_party.ticket_nonce = self._clients[self._real_idx].tickets[0].ticket_nonce
+        self._trusted_party.master_secrets = master_secrets
+
+        binder_key = self._trusted_party.compute_binder_key()
+
+        logger.info(f'trusted party computed binder key: {binder_key}')
+
         self._increment_state()
 
     def _process_ver_dh_phase_2(self):

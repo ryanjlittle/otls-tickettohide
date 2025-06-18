@@ -74,6 +74,7 @@ class VerifierMsgType(IntEnum, metaclass=_FixedEnum, bytelen=1):
     DH_SHARE_PHASE_2  = 4
     DH_SECRETS        = 5
     DH_SECRET_PHASE_2 = 6
+    MASTER_SECRETS    = 99 # for testing purposes only!
 
 def _prover_msg_spec(typ):
     bodylen = 1
@@ -108,6 +109,8 @@ def _verifier_msg_spec(typ):
             bodyspec = Sequence(Struct(cats = FixedSize(32), sats = FixedSize(32)))
         case VerifierMsgType.DH_SECRET_PHASE_2:
             bodyspec = Sequence(Struct(secret = Raw))
+        case VerifierMsgType.MASTER_SECRETS:
+            return BoundedSequence(1, 1, Raw)
         case _:
             raise ParseError(f'unsupported message type {typ}')
     return Bounded(bodylen, bodyspec)

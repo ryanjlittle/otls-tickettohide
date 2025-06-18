@@ -77,11 +77,14 @@ class VerifierCrypto:
 
         app_keys = []
         for key_calc, h in zip(self._key_calcs, hashes):
-            key_calc._hs_trans.set_hash(HandshakeType.FINISHED, h)
+            key_calc._hs_trans.set_hash(HandshakeType.FINISHED, h, from_client=False)
             app_keys.append((key_calc.client_application_traffic_secret, key_calc.server_application_traffic_secret))
         return app_keys
 
-class ProverClientPhase1(Connection):
+    def get_master_secrets(self):
+        return [key_calc.master_secret for key_calc in self._key_calcs]
+
+class ProverClient(Connection):
     """Manages connection to a single TLS server from the prover."""
     def __init__(self, server_id, ciphersuite, group, rseed=None):
 
@@ -136,6 +139,9 @@ class ProverClientPhase1(Connection):
         self._ech = build_prover_client_hello(kex_share=kex_share, ciphers=[self._ciphersuite], kex_groups=[self._group], rseed=self._rseed)[0]
 
         self._handshake = ProverHandshakePhase1(self._ech)
+
+    def set_binder_key(self, binder_key):
+        self._handshake.set_resumption_secrets(binder_key)
 
     def send_and_recv_hellos(self):
         if self._handshake is None:
@@ -218,6 +224,9 @@ class ProverHandshakePhase1(ClientHandshake):
         self._key_calc.server_application_traffic_secret = sats
         self._key_calc.client_application_traffic_secret = cats
         self._received_app_secrets = True
+
+    def set_resumption_secrets(self, binder_key):
+        self._key_calc.binder_key = binder_key
 
     def _process_server_hello(self, body):
         if body.server_random.hex() == 'cf21ad74e59a6111be1d8c021e65b891c2a211167abb8c5e079e09e2c8a8339c':
@@ -311,12 +320,14 @@ class ProverHandshakePhase2(ClientHandshake):
 
 class PartialHandshakeTranscript(HandshakeTranscript):
     """Helper class to compute key derivation while only learning partial transcript hashes, not the full transcript"""
-    def set_hash(self, typ, hash_val):
-        match typ:
-            case HandshakeType.SERVER_HELLO:
+    def set_hash(self, typ, hash_val, from_client=None):
+        match (typ, from_client):
+            case (HandshakeType.SERVER_HELLO, None):
                 self._lookup[typ, False] = hash_val
-            case HandshakeType.FINISHED:
-                self._lookup[typ, False] = hash_val
+            case (HandshakeType.FINISHED, (True | False)):
+                self._lookup[typ, from_client] = hash_val
+            case (HandshakeType.FINISHED, _):
+                raise ValueError('need to specify client finished or server finished')
             case _:
                 raise ValueError('adding unexpected hash value')
         self._history.append(hash_val)
