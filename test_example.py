@@ -10,7 +10,7 @@ Be sure to download the example data files first by running
 from pathlib import Path
 from spec import LimitReader
 from tls13_spec import ClientSecrets, ClientHelloHandshake, Record
-from tls_client import Client
+from tls_client import ClientConnection
 from io import BytesIO
 import argparse
 import logging
@@ -61,7 +61,7 @@ class Example:
     def start(self) -> None:
         if not self._started:
             logger.info("starting client (preprocess client hello)")
-            self.client = Client.create(
+            self.client = ClientConnection.create(
                 ch = self.client_hello,
                 secrets = ClientSecrets.create(
                     kex_sks = [self.client_secret],

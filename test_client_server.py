@@ -12,7 +12,7 @@ import traceback
 import logging
 
 from tls13_spec import ClientOptions, TicketInfo
-from tls_client import build_client, DEFAULT_CLIENT_OPTIONS
+from tls_client import DEFAULT_CLIENT_OPTIONS, connect_client
 from tls_server import Server
 from tls_crypto import gen_server_secrets
 from tls_keycalc import ServerTicketer
@@ -61,12 +61,9 @@ class ClientTest:
     def go(self, in_msgs: Iterable[bytes], out_msgs: Iterable[bytes], options: ClientOptions, rseed: int|None) -> Iterable[TicketInfo]:
         try:
             logger.info(f'client trying to connect and send messages')
-            client = build_client(hostname=self._hostname, options=options, rseed=rseed)
             inmit = iter(in_msgs)
             outit = iter(out_msgs)
-            with socket.create_connection((self._hostname, self._port), timeout=1) as sock:
-                logger.info('TCP connection to server established')
-                client.connect_socket(sock)
+            with connect_client(hostname=self._hostname, port=self._port, options=options, rseed=rseed) as client:
                 logger.info('TLS handshake complete from client perspective')
                 while True:
                     try:

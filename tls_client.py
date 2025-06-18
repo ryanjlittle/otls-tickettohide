@@ -2,12 +2,14 @@
 
 import time
 from collections import namedtuple
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from typing import Self, Any, override, ClassVar
 import dataclasses
 from dataclasses import dataclass, field
+from contextlib import contextmanager
 from secrets import SystemRandom
 from random import Random
+import socket
 import enum
 
 from spec import UnpackError
@@ -137,7 +139,7 @@ class _ChelloExtensions:
 
     def add(self, ext: ClientExtensionVariant) -> None:
         """Adds the given extension to the list."""
-        assert ext.typ not in self.exts
+        assert ext.typ not in self.exts, f"duplicate extension added {ext.typ} {self.exts[ext.typ]}"
         assert ext.typ in self.ORDER
         self.exts[ext.typ] = ext
 
@@ -165,11 +167,13 @@ def _build_ch_inner(
     session_id: bytes,
     ciphers: Iterable[CipherSuite],
     psk_factory: PskExtFactory,
-    outer_exts: _ChelloExtensions,
+    outer_exts: Iterable[ClientExtensionVariant],
     rgen: Random,
 ) -> ClientHelloHandshake:
     # copy common extensions from outer CH
-    extensions = _ChelloExtensions(outer_exts.exts)
+    extensions = _ChelloExtensions()
+    for oext in outer_exts:
+        extensions.add(oext)
 
     # add INNER ECH extension (empty to allow for server response)
     extensions.add(EncryptedClientHelloClientExtension.create(
@@ -276,7 +280,7 @@ def build_client_hello(
                     session_id = sesid,
                     ciphers = options.ciphers,
                     psk_factory = psk_factory,
-                    outer_exts = extensions,
+                    outer_exts = extensions.get(),
                     rgen = rgen,
                 )
 
@@ -355,6 +359,7 @@ class ClientHandshake(AbstractHandshake, PayloadProcessor):
     rwriter        : RecordWriter|None            = None
     cert_chain     : list[bytes]                  = field(default_factory=list)
     cert_pubkey    : bytes|None                   = None
+    kex_group      : NamedGroup|None              = None
 
     def __post_init__(self) -> None:
         self.key_calc = KeyCalc(self.hs_trans)
@@ -497,12 +502,12 @@ class ClientHandshake(AbstractHandshake, PayloadProcessor):
         for ext in sh.data.extensions.uncreate():
             match ext:
                 case KeyShareServerExtension():
-                    group = ext.data.group
-                    private = self.kexes[group]
+                    self.kex_group = ext.data.group
+                    private = self.kexes[self.kex_group]
                     try:
-                        kex = get_kex_alg(group)
+                        kex = get_kex_alg(self.kex_group)
                     except ValueError:
-                        raise TlsError(f"no implementation for kex group {group}")
+                        raise TlsError(f"no implementation for kex group {self.kex_group}")
                     kex_secret = kex.exchange(private, ext.data.pubkey)
                 case SupportedVersionsServerExtension():
                     assert ext.data.uncreate() == Version.TLS_1_3.value
@@ -626,7 +631,7 @@ class ClientHandshake(AbstractHandshake, PayloadProcessor):
         logger.info("got and stored a reconnect ticket")
 
 @dataclass
-class Client(Connection):
+class ClientConnection(Connection):
     handshake: ClientHandshake
 
     @classmethod
@@ -644,11 +649,61 @@ class Client(Connection):
     def ech_configs(self) -> tuple[ECHConfigVariant,...]:
         return tuple(self.handshake.ech_configs)
 
+    def reconnect_options(self) -> ClientOptions:
+        """Produces streamlined ClientOptions for a future connection.
+        Will specify cipher suite and kex group based on what was used
+        in this connection.
+        And will also fill in PSK reconnect ticket and/or ECH configs,
+        if received.
+        """
+        tickets = [self.tickets[0].uncreate()] if self.tickets else []
+        eches = [self.ech_configs[0]] if self.ech_configs else []
+        hs = self.handshake
+        assert hs.kex_group is not None
+        kex = [hs.kex_group]
 
-def build_client(
-    hostname: str|None = None,
+        return DEFAULT_CLIENT_OPTIONS.replace(
+            send_sni = (hs.sni is not None),
+            ciphers = [hs.key_calc.cipher_suite],
+            kex_shares = kex,
+            kex_groups = kex,
+            send_psk = bool(tickets),
+            tickets = tickets,
+            send_ech = True,
+            ech_configs = eches,
+        )
+
+
+@contextmanager
+def connect_client(
+    hostname: str,
+    port: int = 443,
     options: ClientOptions = DEFAULT_CLIENT_OPTIONS,
+    timeout: float|None = None,
     rseed: int|None = None,
-) -> Client:
+) -> Iterator[ClientConnection]:
+    """Creates a socket and completes TLS handshake with given options.
+    This returns a context manager, so it is meant to be used in a with
+    statement so that the socket gets cleaned up.
+    """
     ch, secrets = build_client_hello(hostname, options, rseed)
-    return Client.create(ch, secrets)
+    conn = ClientConnection.create(ch, secrets)
+    with socket.create_connection((hostname, port), timeout) as csock:
+        conn.connect_socket(csock)
+        yield conn
+
+
+def tls_query(
+    hostname         : str,
+    query            : bytes,
+    max_response_size: int           = 2**16,
+    port             : int           = 443,
+    options          : ClientOptions = DEFAULT_CLIENT_OPTIONS,
+    timeout          : float|None    = None,
+) -> tuple[bytes, ClientConnection]:
+    """Performs a simple TLS query/response connection."""
+    worked = False
+    with connect_client(hostname, port, options, timeout) as conn:
+        conn.send(query)
+        response = conn.recv(max_response_size)
+    return bytes(response), conn
