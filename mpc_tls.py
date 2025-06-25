@@ -1,15 +1,18 @@
 from proof_crypto import PartialHandshakeTranscript
-from tls13_spec import HandshakeType, CipherSuite
-from tls_crypto import get_hash_alg
+from tls13_spec import HandshakeType, CipherSuite, RecordHeader, ContentType, Version
+from tls_crypto import get_hash_alg, StreamCipher, get_cipher_alg
 from tls_keycalc import KeyCalc
 
 
 class TrustedParty:
     '''Class for testing. Takes in raw inputs and directly computes functions'''
 
-    CIPHERSUITE = CipherSuite.TLS_AES_128_GCM_SHA256
+    ciphersuite = CipherSuite.TLS_AES_128_GCM_SHA256
 
     def __init__(self):
+        self.enc_cipher = None
+        self.dec_cipher = None
+
         self.master_secrets = []
         self.server_idx = None
         self.ticket_nonce = None
@@ -17,17 +20,18 @@ class TrustedParty:
         self.hash4 = None
         self.hash5 = None
 
-        hash_alg = get_hash_alg(self.CIPHERSUITE)
+        self.hash_alg = get_hash_alg(self.ciphersuite)
+        self.cipher_alg = get_cipher_alg(self.ciphersuite)
 
         trans_initial = PartialHandshakeTranscript()
         trans_resumption = PartialHandshakeTranscript()
-        trans_initial.hash_alg = hash_alg
-        trans_resumption.hash_alg = hash_alg
+        trans_initial.hash_alg = self.hash_alg
+        trans_resumption.hash_alg = self.hash_alg
 
         self.key_calc_initial = KeyCalc(trans_initial)
         self.key_calc_resumption = KeyCalc(trans_resumption)
-        self.key_calc_initial.hash_alg = hash_alg
-        self.key_calc_resumption.hash_alg = hash_alg
+        self.key_calc_initial.hash_alg = self.hash_alg
+        self.key_calc_resumption.hash_alg = self.hash_alg
 
     def compute_binder_key(self):
         assert self.server_idx is not None, 'server_idx not specified'
@@ -55,7 +59,30 @@ class TrustedParty:
         assert self.hash4 is not None, 'hash4 not specified'
 
         self.key_calc_resumption._hs_trans.set_hash(HandshakeType.FINISHED, self.hash4, False)
-        cats = self.key_calc_resumption.client_appllication_traffic_secret
-        sats = self.key_calc_resumption.server_application_traffic_secret
+        self.cats = self.key_calc_resumption.client_appllication_traffic_secret
+        self.sats = self.key_calc_resumption.server_application_traffic_secret
 
-        return cats, sats
+        return self.cats, self.sats
+
+    def encrypt(self, ptext, header=None):
+        assert self.cats is not None, 'must compute traffic keys first'
+
+        if self.enc_cipher is None:
+            self.enc_cipher = StreamCipher(self.cipher_alg, self.hash_alg, self.cats)
+
+        if header is None:
+            header = RecordHeader.pack(
+                typ  = ContentType.APPLICATION_DATA,
+                vers = Version.TLS_1_2,
+                size = self.cipher_alg.ctext_size(len(ptext))
+            )
+
+        return self.enc_cipher.encrypt(ptext, header)
+
+    def decrypt(self, ctext, header):
+        assert self.sats is not None, 'must compute traffic keys first'
+
+        if self.dec_cipher is None:
+            self.dec_cipher = StreamCipher(self.cipher_alg, self.hash_alg, self.sats)
+
+        return self.enc_cipher.decrypt(ctext, header)

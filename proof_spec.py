@@ -59,6 +59,7 @@ class BoundedSequence(Spec):
 
 
 class ProverMsgType(IntEnum, metaclass=_FixedEnum, bytelen=1):
+    # TODO: refactor these types. Should have one thing for hash arrays, one thing for single hashes, etc
     SERVER_HANDSHAKE_TX = 1
     HASH_1              = 2
     HASH_4              = 3
@@ -107,8 +108,8 @@ def _verifier_msg_spec(typ):
             bodyspec = Sequence(Struct(chts = FixedSize(32), shts = FixedSize(32)))
         case VerifierMsgType.APPLICATION_KEYS:
             bodyspec = Sequence(Struct(cats = FixedSize(32), sats = FixedSize(32)))
-        case VerifierMsgType.DH_SECRET_PHASE_2:
-            bodyspec = Sequence(Struct(secret = Raw))
+        case VerifierMsgType.DH_SHARE_PHASE_2:
+            bodyspec = Raw
         case VerifierMsgType.MASTER_SECRETS:
             return BoundedSequence(1, 1, Raw)
         case _:

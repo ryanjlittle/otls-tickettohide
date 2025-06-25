@@ -28,7 +28,7 @@ from tls_keycalc import (
     KeyCalc,
     HandshakeTranscript,
     ServerTicketer,
-    calc_binder_key,
+    calc_binder_val,
 )
 from tls_crypto import (
     gen_cert,
@@ -301,7 +301,7 @@ class _ServerHandshake:
                     psk = self._ticketer.use_ticket(psk_identity, self._key_calc.cipher_suite)
                     if psk is not None:
                         logger.info(f'derived valid PSK {pformat(psk)}')
-                        binder_key = calc_binder_key(self._chello, index, psk, self._key_calc.cipher_suite)
+                        binder_key = calc_binder_val(self._chello, index, self._key_calc.cipher_suite, psk)
                         if binder_key != ext.data.binders[index]:
                             raise TlsError(f"binder key mismatch for selected index {index}")
 

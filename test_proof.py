@@ -46,7 +46,7 @@ class ProofTest:
             t = threading.Thread(
                 name=f"server {i}",
                 target=start_test_server,
-                args=(HttpHandler(), self.hostname, port, server_secret, 2, self.rseed+i,),
+                args=(HttpHandler(), self.hostname, port, server_secret, 3, self.rseed+i,),
                 daemon=True
             )
             self.server_threads.append(t)

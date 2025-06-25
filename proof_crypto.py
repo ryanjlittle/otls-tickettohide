@@ -8,13 +8,14 @@ from proof_common import VerifierError, ProverError
 from proof_connections import ProverRecordReader
 from spec import kwdict, Raw
 from tls13_spec import HandshakeType, PskKeyExchangeMode, ExtensionType, Version, \
-    ClientExtension, ECHClientHelloType, HpkeKdfId, HpkeAeadId, Handshake, ClientState, ContentType, Record
+    ClientExtension, ECHClientHelloType, HpkeKdfId, HpkeAeadId, Handshake, ClientState, ContentType, Record, CipherSuite
 from tls_client import ClientHandshake, ClientSecrets, Client
 from tls_common import TlsError, TlsTODO, logger
 from tls_crypto import get_kex_alg, DEFAULT_KEX_GROUPS, DEFAULT_SIGNATURE_SCHEMES, DEFAULT_CIPHER_SUITES, get_hash_alg, \
     get_cipher_alg
-from tls_keycalc import KeyCalc, HandshakeTranscript
+from tls_keycalc import KeyCalc, HandshakeTranscript, TicketInfo, calc_binder_val
 from tls_records import HandshakeBuffer, RecordWriter, RecordReader, RecordTranscript, DataBuffer, Connection
+from util import b64dec, b64enc
 
 
 class VerifierCrypto:
@@ -29,21 +30,21 @@ class VerifierCrypto:
         self._key_calcs = []
 
         self._dh_secrets = []
-        self._twopc_dh_secret = None
+        self._resumption_dh_secret = None
         self.dh_shares = []
         self._dh_outputs = []
-        self.twopc_dh_share = None
+        self.resumption_dh_share = None
 
         self.hs_keys = []
         self.app_keys = []
 
     def gen_secrets(self):
-        if len(self._dh_secrets) > 0 or self._twopc_dh_secret is not None:
+        if len(self._dh_secrets) > 0 or self._resumption_dh_secret is not None:
             raise VerifierError('already generated secrets')
         self._dh_secrets = [self._kex.gen_private(self._rgen) for _ in range(self._num_servers)]
         self.dh_shares = [self._kex.get_public(secret) for secret in self._dh_secrets]
-        self._twopc_dh_secret = self._kex.gen_private(self._rgen)
-        self.twopc_dh_share = self._kex.get_public(self._twopc_dh_secret)
+        self._resumption_dh_secret = self._kex.gen_private(self._rgen)
+        self.resumption_dh_share = self._kex.get_public(self._resumption_dh_secret)
 
     def exchange_all(self, server_shares):
         if len(self._dh_secrets) == 0:
@@ -88,6 +89,7 @@ class ProverClient(Connection):
     """Manages connection to a single TLS server from the prover."""
     def __init__(self, server_id, ciphersuite, group, rseed=None):
 
+        self._use_psk = False
         self._server_id = server_id
         self._ciphersuite = ciphersuite
         self._group = group
@@ -135,13 +137,13 @@ class ProverClient(Connection):
 
     def set_kex_share(self, kex_share):
         self._kex_share = kex_share
-        # TODO: make this ECH
-        self._ech = build_prover_client_hello(kex_share=kex_share, ciphers=[self._ciphersuite], kex_groups=[self._group], rseed=self._rseed)[0]
+        # TODO: make these ECH
+        if self._use_psk:
+            self._ech, secrets = build_prover_client_hello(kex_share=kex_share, ciphers=[self._ciphersuite], kex_groups=[self._group], ticket = self._resumption_ticket_info, rseed=self._rseed)
+        else:
+            self._ech, secrets = build_prover_client_hello(kex_share=kex_share, ciphers=[self._ciphersuite], kex_groups=[self._group], rseed=self._rseed)
 
-        self._handshake = ProverHandshakePhase1(self._ech)
-
-    def set_binder_key(self, binder_key):
-        self._handshake.set_resumption_secrets(binder_key)
+        self._handshake = ProverHandshake(self._ech, secrets)
 
     def send_and_recv_hellos(self):
         if self._handshake is None:
@@ -180,26 +182,30 @@ class ProverClient(Connection):
     def set_application_secrets(self, cats, sats):
         self._handshake.set_application_secrets(cats, sats)
 
+    def set_resumption_secrets(self, binder_key, ticket):
+        self._binder_key = binder_key
+        self._resumption_ticket_info = PartialTicketInfo(
+            ticket_id = ticket.ticket,
+            binder_key = binder_key,
+            csuite = self._ciphersuite,
+            mask = ticket.ticket_age_add,
+            lifetime = ticket.ticket_lifetime,
+            modes = set(PskKeyExchangeMode)
+        )
+        self._use_psk = True
+
     def process_ticket(self):
         self._handshake._rreader.fetch()
         if len(self._handshake.tickets) == 0:
             raise ProverError('did not receive any tickets')
         self.tickets = self._handshake.tickets
 
-class ProverHandshakePhase1(ClientHandshake):
+class ProverHandshake(ClientHandshake):
     """Modified TLS client for the prover"""
-    """
-    For the first phase, need to do the following:
-    - Create (encrypted) client hello that uses a given DH share. Save the randomness used to encrypt!
-    - Accept handshake keys to decrypt and verify handshake messages
-    - Accept application keys 
-    - Decrypt and store ticket
-    For second phase (DO THIS IN A DIFFERENT CLASS):
-    - Create another ECH with a given DH share
-    - Derive resumption secrets from phase 1
-    """
-    def __init__(self, client_hello):
-        super().__init__(client_hello, ClientSecrets())
+    def __init__(self, client_hello, secrets=None):
+        if secrets is None:
+            secrets = ClientSecrets()
+        super().__init__(client_hello, secrets)
         self._received_hs_secrets = False
         self._received_app_secrets = False
 
@@ -225,8 +231,9 @@ class ProverHandshakePhase1(ClientHandshake):
         self._key_calc.client_application_traffic_secret = cats
         self._received_app_secrets = True
 
-    def set_resumption_secrets(self, binder_key):
+    def set_resumption_secrets(self, binder_key, ticket):
         self._key_calc.binder_key = binder_key
+        self.tickets = [ticket]
 
     def _process_server_hello(self, body):
         if body.server_random.hex() == 'cf21ad74e59a6111be1d8c021e65b891c2a211167abb8c5e079e09e2c8a8339c':
@@ -336,6 +343,64 @@ class PartialHandshakeTranscript(HandshakeTranscript):
         """stub: this method isn't needed"""
         pass
 
+class PartialTicketInfo(TicketInfo):
+    """For computing binder values using only the ticket nonce and binder key (without the resumption master secret)"""
+    def __init__(self, ticket_id, binder_key, csuite, modes, mask, lifetime, creation=None):
+        self._id = ticket_id
+        self._binder_key = binder_key
+        self._csuite = csuite
+        self._modes = tuple(modes)
+        self._mask = mask
+        self._lifetime = lifetime
+        self._creation = time.time() if creation is None else creation
+
+    def to_dict(self):
+        """stub: method not needed"""
+        return {
+            'ticket_id': b64enc(self._id),
+            'binder_key': b64enc(self._binder_key),
+            'csuite': int(self._csuite),
+            'modes': [int(mode) for mode in self._modes],
+            'mask': self._mask,
+            'lifetime': self._lifetime,
+            'creation': self._creation,
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(
+            ticket_id = b64dec(d['ticket_id']),
+            binder_key = b64dec(d['binder_key']),
+            csuite = CipherSuite(d['csuite']),
+            modes = tuple(PskKeyExchangeMode(code) for code in d['modes']),
+            mask = d['mask'],
+            lifetime = d['lifetime'],
+            creation = d['creation'],
+        )
+
+    @property
+    def binder_key(self):
+        return self._binder_key
+
+    def get_binder_val(self, chello, prefix=b''):
+        """Computes the binder key for this ticket within the given (unpacked) client hello.
+
+                prefix is (optionally) a transcript prefix, e.g. from a hello retry.
+                """
+
+        # find the index
+        try:
+            psk_ext = next(filter(
+                (lambda ext: ext.typ == ExtensionType.PRE_SHARED_KEY),
+                chello.body.extensions))
+            index = next(i for i, ident in enumerate(psk_ext.data.identities)
+                         if ident.identity == self._id)
+        except StopIteration:
+            raise TlsError("this ticket id not found in given client hello") from None
+
+        return calc_binder_val(chello, index, self._csuite, binder_key=self.binder_key, prefix=prefix)
+
+
 def build_prover_client_hello(
         sni = None, # server name indication
         ciphers = None, # default, replace with DEFAULT_CIPHER_SUITES or ticket.csuite
@@ -344,6 +409,7 @@ def build_prover_client_hello(
         kex_share = None,  # key exchange share to be used
         sig_algs = DEFAULT_SIGNATURE_SCHEMES,
         ticket = None, # reconnect ticket to use as PSK for reconnect
+        binder_key = None,
         psk_modes = (PskKeyExchangeMode.PSK_DHE_KE,),
         send_time = None, # default to current time
         rseed = None, # optional seed for repeatability; NOT secure
@@ -354,13 +420,7 @@ def build_prover_client_hello(
     rgen = SystemRandom() if rseed is None else Random(rseed)
 
     if ciphers is None:
-        if ticket is None:
-            ciphers = DEFAULT_CIPHER_SUITES
-        else:
-            ciphers = (ticket.csuite,)
-    elif ticket is not None:
-        if ticket.csuite not in ciphers:
-            raise ValueError("incompatible cipher suites for this ticket")
+        ciphers = DEFAULT_CIPHER_SUITES
 
     if send_time is None:
         send_time = time.time()
@@ -448,7 +508,7 @@ def build_prover_client_hello(
     psk = None
     if ticket is not None:
         ch = ticket.add_psk_ext(ch, send_time)
-        psk = ticket.secret
+        psk = b'' # dummy value so that we can build a ClientHandshake around the hello without needing the real psk
 
     return Handshake.prepack(ch), ClientSecrets(kex_sks=kex_sks, psk=psk)
 

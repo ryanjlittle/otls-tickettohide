@@ -122,12 +122,28 @@ class Verifier(ABC):
     def _2pc_hkdf(self):
         assert self._state == VerifierState.WAIT_2PC_HKDF
 
+        # TODO: replace this with real 2PC. Right not just sending the whole secrets to the prover
         master_secrets = self._crypto_manager.get_master_secrets()
         self._prover_conn.send_msg(VerifierMsgType.MASTER_SECRETS, master_secrets)
+
+        self._prover_conn.send_msg(VerifierMsgType.DH_SHARE_PHASE_2, self._crypto_manager.resumption_dh_share)
+
         self._increment_state()
 
     def _process_commitment(self):
         assert self._state == VerifierState.WAIT_COMMITMENT
+
+        msg = self._prover_conn.recv_msg()
+        if msg.typ != ProverMsgType.SERVER_HANDSHAKE_TX:
+            raise VerifierError('unexpected message received')
+        transcript = msg.body
+
+        msg = self._prover_conn.recv_msg()
+        if msg.typ != ProverMsgType.COMMITMENT:
+            raise VerifierError('unexpected message received')
+        commitment = msg.body
+
+        # TODO: finish this
         self._increment_state()
 
     def _verify_proof(self):

@@ -117,12 +117,12 @@ class TicketInfo:
         new_chello = chello._asdict() | {'body': body}
 
         # insert actual binder and return the (new) client hello object
-        actual_binder = self.get_binder_key(Handshake.prepack(new_chello))
+        actual_binder = self.get_binder_val(Handshake.prepack(new_chello))
         binder_list[0] = actual_binder
         logger.info(f'inserting psk with id {self._id[:12]}... and  binder {actual_binder} into client hello')
         return Handshake.prepack(new_chello)
 
-    def get_binder_key(self, chello, prefix=b''):
+    def get_binder_val(self, chello, prefix=b''):
         """Computes the binder key for this ticket within the given (unpacked) client hello.
 
         prefix is (optionally) a transcript prefix, e.g. from a hello retry.
@@ -138,7 +138,7 @@ class TicketInfo:
         except StopIteration:
             raise TlsError("this ticket id not found in given client hello") from None
 
-        return calc_binder_key(chello, index, self._secret, self._csuite, prefix)
+        return calc_binder_val(chello, index, self._csuite, psk=self._secret, prefix=prefix)
 
 
 class HandshakeTranscript:
@@ -416,7 +416,7 @@ class ServerTicketer:
         return inner.psk
 
 
-def calc_binder_key(chello, index, secret, csuite, prefix=b''):
+def calc_binder_val(chello, index, csuite, psk=None, binder_key=None, prefix=b''):
     """Computes the binder key at given index within given (unpacked) client hello.
 
     The actual binder keys must be filled in (and with the proper lengths)
@@ -446,8 +446,13 @@ def calc_binder_key(chello, index, secret, csuite, prefix=b''):
     assert raw_hello.endswith(pbinds)
     hst.add(HandshakeType.CLIENT_HELLO, True, raw_hello[:-len(pbinds)])
 
-    kc.psk = secret
-    binder = kc.get_verify_data(kc.binder_key, hst[-1])
+    if psk is not None:
+        kc.psk = psk
+        binder = kc.get_verify_data(kc.binder_key, hst[-1])
+    elif binder_key is not None:
+        binder = kc.get_verify_data(binder_key, hst[-1])
+    else:
+        raise ValueError('must provide either pre-shared key or binder key')
 
     if len(binder) != len(pske.binders[index]):
         raise TlsError("binder key in client hello has the wrong length")
