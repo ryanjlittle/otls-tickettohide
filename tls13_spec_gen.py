@@ -313,14 +313,16 @@ specs: dict[str, GenSpec] = kwdict(
         DRAFT_24 = 0xfe0d,
     ),
 
+    EchKeyConfig = Struct(
+        config_id     = Uint(8),
+        kem_id        = 'HpkeKemId',
+        public_key    = Bounded(16, Raw),
+        cipher_suites = Bounded(16, Sequence('HpkeSymmetricCipherSuite')),
+    ),
+
     ECHConfig = Select('ECHConfigVersion', 16)(
         DRAFT_24 = Struct(
-            key_config = Struct (
-                config_id     = Uint(8),
-                kem_id        = 'HpkeKemId',
-                public_key    = Bounded(16, Raw),
-                cipher_suites = Bounded(16, Sequence('HpkeSymmetricCipherSuite')),
-            ),
+            key_config = 'EchKeyConfig',
             maximum_name_length = Uint(8),
             public_name         = Bounded(8, String),
             extensions          = Bounded(16, Sequence(Struct(
