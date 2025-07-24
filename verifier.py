@@ -10,8 +10,8 @@ from random import Random
 from proof_common import VerifierError
 from proof_connections import ProverConnection
 from proof_crypto import VerifierCrypto
-from proof_spec import VerifierMsgType, ProverMsgType
-from tls13_spec import CipherSuite, NamedGroup, Handshake, ExtensionType
+from proof_spec import VerifierMsgType, ProverMsgType, KexSharesPhase1VerifierMsg
+from tls13_spec import CipherSuite, NamedGroup, Handshake, ExtensionType, HandshakeType
 from tls_common import *
 from tls_crypto import get_kex_alg
 
@@ -77,7 +77,10 @@ class Verifier(ABC):
     def _send_dh_phase_1(self):
         assert self._state == VerifierState.CONNECTED
         self._crypto_manager.gen_secrets()
-        self._prover_conn.send_msg(VerifierMsgType.DH_SHARE_PHASE_1, self._crypto_manager.dh_shares)
+        # TODO: remove log
+        logger.info(f'shares: {self._crypto_manager.dh_shares}')
+        msg = KexSharesPhase1VerifierMsg.create(self._crypto_manager.dh_shares)
+        self._prover_conn.send_msg(msg)
         self._increment_state()
 
     def _process_hash_1(self):
@@ -91,7 +94,7 @@ class Verifier(ABC):
         self._crypto_manager.exchange_all(self._kex_shares)
 
         hash_msg = self._prover_conn.recv_msg()
-        if hash_msg.typ != ProverMsgType.HASH_1:
+        if hash_msg.typ != ProverMsgType.HASH_1S:
             raise VerifierError('unexpected message received')
         hashes = hash_msg.body
 
@@ -101,16 +104,26 @@ class Verifier(ABC):
         self._increment_state()
 
     def _extract_kex_share(self, hello):
-        """we validate the entire transcript later, so no need to validate anything here."""
-        body = Handshake.unpack(hello.payload).body
-        kex_extension = body.extensions[-1]
-        return kex_extension.data.pubkey
+        unpacked_hello = Handshake.unpack(hello.payload)
+        if unpacked_hello.typ != HandshakeType.CLIENT_HELLO:
+            raise ValueError(f'expected a CLIENT_HELLO message, received type {unpacked_hello.typ}')
+
+        extensions = Handshake.unpack(hello.payload).data.extensions
+        kex_extension = extensions[-1]
+        if kex_extension.typ != ExtensionType.KEY_SHARE:
+            raise ValueError(f'expected KEY_SHARE extension as final unencrypted extension, received type {kex_extension.type}')
+
+        key_share_entry = kex_extension.data[0]
+        if key_share_entry.group != self._group:
+            raise ValueError(f'expected first key share to be of group {self._group}, received group {key_share_entry.group}')
+
+        return key_share_entry.pubkey
 
     def _process_hash_4(self):
         assert  self._state == VerifierState.WAIT_HASH_4
 
         msg = self._prover_conn.recv_msg()
-        if msg.typ != ProverMsgType.HASH_4:
+        if msg.typ != ProverMsgType.HASH_4S:
             raise VerifierError('unexpected message received')
         hashes = msg.body
 
@@ -126,7 +139,7 @@ class Verifier(ABC):
         master_secrets = self._crypto_manager.get_master_secrets()
         self._prover_conn.send_msg(VerifierMsgType.MASTER_SECRETS, master_secrets)
 
-        self._prover_conn.send_msg(VerifierMsgType.DH_SHARE_PHASE_2, self._crypto_manager.resumption_dh_share)
+        self._prover_conn.send_msg(VerifierMsgType.KEX_SHARE_PHASE_2, self._crypto_manager.resumption_dh_share)
 
         self._increment_state()
 

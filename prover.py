@@ -10,7 +10,8 @@ from mpc_tls import TrustedParty
 from proof_common import *
 from proof_connections import VerifierConnection, obtain_tickets
 from proof_crypto import ProverClient
-from proof_spec import VerifierMsgType, VerifierMsg, ProverMsgType
+from proof_spec import VerifierMsgType, VerifierMsg, ProverMsgType, VerifierMsgTypes, KexSharesPhase1VerifierMsg, \
+    ServerHandshakeTxProverMsg, Hash1SProverMsg, Hash4SProverMsg
 from tls13_spec import CipherSuite, NamedGroup
 from tls_common import *
 
@@ -106,6 +107,9 @@ class Prover(ABC):
     def _increment_state(self):
         self._state = self._state.next()
 
+    def _send_to_verifier(self, msg):
+        self._verifier_connection.send_msg(msg)
+
     def _begin(self):
         assert self._state == ProverState.INIT
         if len(self._server_ids) == 0:
@@ -119,9 +123,9 @@ class Prover(ABC):
     def _process_ver_dh_phase_1(self):
         assert self._state == ProverState.WAIT_VER_DH_PHASE_1
         msg = self._verifier_connection.recv_msg()
-        if msg.typ != VerifierMsgType.DH_SHARE_PHASE_1:
-            raise ProverError(f'received unexpected message from verifier.')
-        dh_shares = msg.body
+        if not isinstance(msg.value, KexSharesPhase1VerifierMsg):
+            raise ProverError(f'received unexpected message from verifier: {msg.typ}')
+        dh_shares = msg.data.kex_shares
         logger.info(f'received Diffie-Hellman shares from verifier: {dh_shares}')
         for (client, share) in zip(self._ticket_clients, dh_shares):
             client.set_kex_share(share)
@@ -137,10 +141,13 @@ class Prover(ABC):
                 f.result()
 
         transcripts = [client.get_encrypted_server_msgs() for client in self._ticket_clients]
-        hashes = [client.get_hash1() for client in self._ticket_clients]
+        tx_message = ServerHandshakeTxProverMsg.create(transcripts)
+        self._send_to_verifier(tx_message)
 
-        self._verifier_connection.send_msg(ProverMsgType.SERVER_HANDSHAKE_TX, transcripts)
-        self._verifier_connection.send_msg(ProverMsgType.HASH_1, hashes)
+        hashes = [client.get_hash1() for client in self._ticket_clients]
+        hash_message = Hash1SProverMsg.create(hashes)
+        self._send_to_verifier(hash_message)
+
         self._increment_state()
 
     def _process_hs_keys(self):
@@ -157,7 +164,9 @@ class Prover(ABC):
             client.send_client_finished()
             hashes.append(client.get_hash4())
 
-        self._verifier_connection.send_msg(ProverMsgType.HASH_4, hashes)
+        hash_message = Hash4SProverMsg.create(hashes)
+        self._send_to_verifier(hash_message)
+
         self._increment_state()
 
     def _process_app_keys(self):
@@ -232,11 +241,14 @@ class Prover(ABC):
         self._resumption_client.send_and_recv_hellos()
 
         transcript = self._resumption_client.get_encrypted_server_msgs()
+        tx_message = ServerHandshakeTxProverMsg.create(transcript)
+        self._send_to_verifier(tx_message)
 
         # TODO: need to send a commitment to this hash, right now sending it in the clear
         hash1 = self._resumption_client.get_hash1()
-        self._verifier_connection.send_msg(ProverMsgType.SERVER_HANDSHAKE_TX, [transcript])
-        self._verifier_connection.send_msg(ProverMsgType.COMMITMENT, hash1)
+        hash_message = Hash1SProverMsg.create([hash1])
+        self._send_to_verifier(hash_message)
+
         self._increment_state()
 
     def _2pc_handshake_key(self):

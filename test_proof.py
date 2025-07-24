@@ -41,8 +41,8 @@ class ProofTest:
         for i in range(num_servers):
             logger.info(f'generating cert and ECH key for server {i}')
             server_secret = gen_server_secrets(rgen=Random(self.rseed+i))
-            cert_pubkey = server_secret.cert.public_key
-            ech_pubkeys = [ech.public_key for ech in server_secret.eches]
+            cert_der = server_secret.cert.cert_der
+            ech_pubkeys = [ech.config.data.key_config.public_key for ech in server_secret.eches]
             t = threading.Thread(
                 name=f"server {i}",
                 target=start_test_server,
@@ -53,7 +53,7 @@ class ProofTest:
             t.start()
             # start_server(HttpHandler(), self.hostname, port, server_secret, self.rseed)
             logger.info(f'server opened on port {port}')
-            self.server_ids.append(ServerID(self.hostname, port, cert_pubkey, ech_pubkeys))
+            self.server_ids.append(ServerID(self.hostname, port, cert_der, ech_pubkeys))
             port += 1
 
 

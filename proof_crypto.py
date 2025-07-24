@@ -6,16 +6,16 @@ from secrets import SystemRandom
 
 from proof_common import VerifierError, ProverError
 from proof_connections import ProverRecordReader
-from spec import kwdict, Raw
 from tls13_spec import HandshakeType, PskKeyExchangeMode, ExtensionType, Version, \
-    ClientExtension, ECHClientHelloType, HpkeKdfId, HpkeAeadId, Handshake, ClientState, ContentType, Record, CipherSuite
-from tls_client import ClientHandshake, ClientSecrets, Client
+    ClientExtension, ECHClientHelloType, HpkeKdfId, HpkeAeadId, Handshake, ClientState, ContentType, Record, \
+    CipherSuite
+from tls_client import ClientHandshake, ClientSecrets, build_client_hello
 from tls_common import TlsError, TlsTODO, logger
 from tls_crypto import get_kex_alg, DEFAULT_KEX_GROUPS, DEFAULT_SIGNATURE_SCHEMES, DEFAULT_CIPHER_SUITES, get_hash_alg, \
     get_cipher_alg
-from tls_keycalc import KeyCalc, HandshakeTranscript, TicketInfo, calc_binder_val
-from tls_records import HandshakeBuffer, RecordWriter, RecordReader, RecordTranscript, DataBuffer, Connection
-from util import b64dec, b64enc
+from tls_keycalc import KeyCalc, HandshakeTranscript, TicketInfo, calc_binder_key
+from tls_records import HandshakeBuffer, RecordWriter, RecordTranscript, DataBuffer, Connection
+from util import b64dec, b64enc, kwdict
 
 
 class VerifierCrypto:
@@ -127,9 +127,9 @@ class ProverClient(Connection):
         self._rreader = ProverRecordReader(rfile, self._transcript, self._app_data_in)
         self._rwriter = RecordWriter(wfile, self._transcript)
 
-        self._rreader.hs_buffer = HandshakeBuffer(self._handshake)
-        self._handshake._rreader = self._rreader
-        self._handshake._rwriter = self._rwriter
+        self._rreader.hs_buffer = HandshakeBuffer()
+        self._handshake.rreader = self._rreader
+        self._handshake.rwriter = self._rwriter
 
         self._connected = True
         logger.info(f'connected to server on port {self._port}')
@@ -137,13 +137,15 @@ class ProverClient(Connection):
 
     def set_kex_share(self, kex_share):
         self._kex_share = kex_share
-        # TODO: make these ECH
         if self._use_psk:
             self._ech, secrets = build_prover_client_hello(kex_share=kex_share, ciphers=[self._ciphersuite], kex_groups=[self._group], ticket = self._resumption_ticket_info, rseed=self._rseed)
         else:
-            self._ech, secrets = build_prover_client_hello(kex_share=kex_share, ciphers=[self._ciphersuite], kex_groups=[self._group], rseed=self._rseed)
+            #self._ech, secrets = build_prover_client_hello(kex_share=kex_share, ciphers=[self._ciphersuite], kex_groups=[self._group], rseed=self._rseed)
+            # TODO: modify build_client_hello and clientOptions to allow specifying the kex share and binder key.
+            self._ech, secrets = build_client_hello(hostname=self._host, rseed=self._rseed)
+            #ech.data.extensions[-1].data[0].pubkey = kex_share
 
-        self._handshake = ProverHandshake(self._ech, secrets)
+        self._handshake = ProverHandshake.create(self._ech, secrets)
 
     def send_and_recv_hellos(self):
         if self._handshake is None:
@@ -202,12 +204,21 @@ class ProverClient(Connection):
 
 class ProverHandshake(ClientHandshake):
     """Modified TLS client for the prover"""
-    def __init__(self, client_hello, secrets=None):
-        if secrets is None:
-            secrets = ClientSecrets()
-        super().__init__(client_hello, secrets)
-        self._received_hs_secrets = False
-        self._received_app_secrets = False
+
+    _received_hs_secrets = False
+    _received_app_secrets = False
+    #
+    # def __init__(self):
+    #     # if secrets is None:
+    #     #     secrets = ClientSecrets()
+    #     # super().__init__(client_hello, secrets)
+    #     self._received_hs_secrets = False
+    #     self._received_app_secrets = False
+
+    # @classmethod
+    # def create(cls, ch: ClientHelloHandshake, secrets: ClientSecrets|None) -> Self:
+    #     if secrets is None:
+    #         secrets = ClientSecrets()
 
     def set_handshake_secrets(self, chts, shts):
         if self._received_hs_secrets:
@@ -398,7 +409,7 @@ class PartialTicketInfo(TicketInfo):
         except StopIteration:
             raise TlsError("this ticket id not found in given client hello") from None
 
-        return calc_binder_val(chello, index, self._csuite, binder_key=self.binder_key, prefix=prefix)
+        return calc_binder_key(chello, index, self._csuite, binder_key=self.binder_key, prefix=prefix)
 
 
 def build_prover_client_hello(

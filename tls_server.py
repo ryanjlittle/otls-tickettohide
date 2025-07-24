@@ -430,6 +430,16 @@ class Server(Connection):
     def __init__(self, server_secrets: ServerSecrets, ticketer: ServerTicketer, rseed:int|None=None) -> None:
         super().__init__(RecordTranscript(is_client=False), _ServerHandshake(server_secrets, ticketer, rseed))
 
+@dataclass
+class ServerID:
+    hostname: str
+    port: int
+    cert_pubkey: bytes
+    ech_pubkeys: list[bytes]
+
+    def to_string(self):
+        return f'{self.hostname}:{self.port}'
+
 
 class _ThreadLogFilter(logging.Filter):
     # inspired by https://stackoverflow.com/a/55035193/1008966

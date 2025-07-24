@@ -2,13 +2,12 @@
 This should probably be better integrated with the Connection code in tls_records.py
 """
 import socket
-from abc import ABC, abstractmethod
 
 from proof_common import *
 from proof_spec import ProverMsg, VerifierMsg
-from spec import force_write, UnpackError
-from tls13_spec import Record, ContentType, RecordHeader, InnerPlaintext
-from tls_client import Client
+from spec import force_write, UnpackError, LimitReader
+from tls13_spec import Record, ContentType, ClientOptions
+from tls_client import ClientConnection, connect_client
 from tls_common import *
 from tls_records import RecordReader
 
@@ -17,73 +16,48 @@ class MsgWriter(ABC):
     def __init__(self, out_file):
         self._out_file = out_file
 
-    def send_msg(self, typ, payload):
-        raw = self._get_raw(typ, payload)
-        assert raw is not None
-        force_write(self._out_file, raw)
-        logger.info(f'sent message to {self._recipient}: {raw}')
+    def send_msg(self, msg):
+        # raw = self._get_raw(typ, payload)
+        # assert raw is not None
+        msg.pack_to(self._out_file)
+        #force_write(self._out_file, raw)
+        logger.info(f'sent {msg.typ} message to {self._recipient}: {msg.pack()}')
 
-    @abstractmethod
-    def _get_raw(self, typ, payload):
-        pass
 
-class MsgReader(ABC):
+class MsgReader():
     def __init__(self, in_file):
         self._in_file = in_file
 
     def recv_msg(self):
-        message = self._read_object()
-        typ, body = message
-        logger.info(f'received message of type {typ} from {self._sender}')
-        return message
+        try:
+            msg = self._msg_type.unpack_from(self._in_file)
+        except (UnpackError, EOFError) as e:
+            raise VerifierError(f'error reading or unpacking record from {self._sender}') from e
+        logger.info(f'received message of type {msg.typ} from {self._sender}')
+        return msg
 
-    @abstractmethod
-    def _read_object(self):
-        pass
 
 class ProverMsgWriter(MsgWriter):
     """Writes prover messages to be sent to the verifier"""
-    def __init__(self, outfile):
-        super().__init__(outfile)
-        self._recipient = 'verifier'
+    _recipient = 'verifier'
 
-    def _get_raw(self, typ, payload):
-        return ProverMsg.pack(typ, payload)
 
 class VerifierMsgWriter(MsgWriter):
     """Writes prover messages to be sent to the verifier"""
-    def __init__(self, outfile):
-        super().__init__(outfile)
-        self._recipient = 'prover'
+    _recipient = 'prover'
 
-    def _get_raw(self, typ, payload):
-        return VerifierMsg.pack(typ, payload)
 
 class ProverMsgReader(MsgReader):
     """Reads messages sent by the prover, to be read by the verifier"""
-    def __init__(self, infile):
-        super().__init__(infile)
-        self._msgtype = ProverMsg
-        self._sender = 'prover'
+    _msg_type = ProverMsg
+    _sender = 'prover'
 
-    def _read_object(self):
-        try:
-            return ProverMsg.unpack_from(self._in_file)
-        except (UnpackError, EOFError) as e:
-            raise VerifierError("error reading or unpacking record from prover") from e
 
 class VerifierMsgReader(MsgReader):
     """Reads messages sent by the verifier, to be read by the prover"""
-    def __init__(self, infile):
-        super().__init__(infile)
-        self._msgtype = VerifierMsg
-        self._sender = 'verifier'
+    _msg_type = VerifierMsg
+    _sender = 'verifier'
 
-    def _read_object(self):
-        try:
-            return VerifierMsg.unpack_from(self._in_file)
-        except (UnpackError, EOFError) as e:
-            raise ProverError("error reading or unpacking record from verifier") from e
 
 class ProverConnection:
     """Manages connection to the prover from the verifier."""
@@ -118,11 +92,10 @@ class ProverConnection:
         self._connected = True
         logger.info(f'connected to prover on port {self._prover_port}')
 
-    def send_msg(self, typ, payload):
+    def send_msg(self, msg):
         if not self._connected:
             raise VerifierError("can't send application data yet")
-        logger.info(f'sending {typ} message to prover')
-        self._writer.send_msg(typ, payload)
+        self._writer.send_msg(msg)
 
     def recv_msg(self):
         if not self._connected:
@@ -181,11 +154,10 @@ class VerifierConnection:
         self._reader = VerifierMsgReader(self._read_file)
         self._writer = ProverMsgWriter(self._write_file)
 
-    def send_msg(self, typ, payload):
+    def send_msg(self, msg):
         if not self._connected:
             raise VerifierError("can't send application data yet")
-        logger.info(f'sending {typ} message to verifier')
-        self._writer.send_msg(typ, payload)
+        self._writer.send_msg(msg)
 
     def recv_msg(self):
         message = self._reader.recv_msg()
@@ -247,13 +219,9 @@ class ProverRecordReader(RecordReader):
 def obtain_tickets(server_id):
     host = server_id.hostname
     port = server_id.port
-    client = Client.build(host)
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        try:
-            sock.connect((host, port))
-        except ConnectionRefusedError:
-            raise ProverError(f"couldn't connect to the server on {host}:{port}. Did you start the server?")
-        client.connect_socket(sock) # Does handshake but doesn't process tickets
-        client._rreader.fetch()  # Fetch first ticket
-        client.send(b'x')  # Just a dummy message
+
+    with connect_client(host, port) as client:
+        client._rreader.fetch() # Fetch first ticket
+        client.send(b'x') # Just a dummy message
+
     return client.tickets
