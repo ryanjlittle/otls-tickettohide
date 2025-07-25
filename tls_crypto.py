@@ -51,7 +51,7 @@ from tls13_spec import (
     HpkeAeadId,
     HpkeSymmetricCipherSuite,
     PyhpkeKeypair,
-    KeyConfig,
+    EchKeyConfig,
     Draft24ECHConfig,
     PskKeyExchangeMode,
 )

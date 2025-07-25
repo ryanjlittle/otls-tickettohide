@@ -1,6 +1,6 @@
 from typing import override, BinaryIO, Self
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cached_property
 import enum
 
@@ -25,6 +25,9 @@ from tls13_spec import (
     ServerNameClientExtension,
 
     HpkeSymmetricCipherSuite,
+
+    EchSecrets,
+    EchKeyConfig,
 )
 from tls_crypto import (
     HpkeAlg,
@@ -66,6 +69,34 @@ def encode_inner(
     ch_nosid = chello.data.replace(session_id = b'')
     encoded_ch = ClientHelloHandshakeData.pack(ch_nosid)
     return encoded_ch + b'\x00'*padding
+
+
+@dataclass
+class _EchExtBuilder:
+    orig: ClientHelloHandshake
+    exts: tuple[ClientExtensionVariant, ...] = field(init=False)
+    ech: OuterECHClientHello = field(init=False)
+    index: int = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.exts = tuple(self.orig.data.extensions.uncreate())
+        for index, ext in enumerate(self.exts):
+            match ext:
+                case EncryptedClientHelloClientExtension() as ech_ext:
+                    match ech_ext.data.variant:
+                        case OuterECHClientHello() as oech:
+                            self.ech = oech
+                            self.index = index
+                            break
+        else:
+            raise ValueError("no outer ECH extension found in original client hello")
+
+    def fill(self, payload: bytes) -> ClientHelloHandshake:
+        assert len(self.ech.data.payload) == len(payload), "payload length should match original"
+        filled_ech = EncryptedClientHelloClientExtension.create(self.ech.replace(payload=payload))
+        new_exts = self.exts[:self.index] + (filled_ech,) + self.exts[self.index+1:]
+        return self.orig.replace(extensions=new_exts)
+
 
 @dataclass
 class OuterPrep:
@@ -151,21 +182,10 @@ class OuterPrep:
     def fill_outer(self, outer_ch: ClientHelloHandshake) -> ClientHelloHandshake:
         """Given a complete outer clienthello with a dummy ECH extension,
         fills in the extension ciphertext to complete it."""
-        if get_ech_type(outer_ch) != EchType.OUTER:
-            raise ValueError("fill_outer needs an outer client hello")
 
-        # extract the ECH extension from the outer hello
-        ext_list: list[ClientExtensionVariant] = list(outer_ch.data.extensions.uncreate())
-        for index, ext in enumerate(ext_list):
-            match ext:
-                case EncryptedClientHelloClientExtension() as ech_ext:
-                    match ech_ext.data.variant:
-                        case OuterECHClientHello() as oech_ext:
-                            break
-        else:
-            assert False, "no outer ECH extension found but we already checked with get_ech_type"
+        builder = _EchExtBuilder(outer_ch)
 
-        if len(oech_ext.data.payload) != self.payload_length or any(oech_ext.data.payload):
+        if len(builder.ech.data.payload) != self.payload_length or any(builder.ech.data.payload):
             raise ValueError(f"expected outer ECH payload to be all zeros of length {self.payload_length}")
 
         # compute the AEAD ciphertext
@@ -176,10 +196,26 @@ class OuterPrep:
             raise ValueError("expected ct length to be {self.payload_length} byt got {len(ct)}")
 
         # rebuild the client hello with the ciphertext
-        filled_ext = EncryptedClientHelloClientExtension.create(
-            oech_ext.replace(payload=ct))
-        ext_list[index] = filled_ext
-        return outer_ch.replace(extensions=ext_list)
+        return builder.fill(ct)
+
+
+def try_get_inner(outer: ClientHelloHandshake, secrets: list[EchSecrets]) -> ClientHelloHandshake|None:
+    configs: dict[int, tuple[EchKeyConfig, bytes]] = {}
+    for esec in secrets:
+        match esec.config:
+            case Draft24ECHConfig(data=config):
+                configs[config.key_config.config_id] = (config.key_config, esec.private_key)
+            case _:
+                logger.warning(f"Ignoring unsupported ECH config {esec.config}")
+
+    ext_list: list[ClientExtensionVariant] = list(outer.data.extensions.uncreate())
+    for index, ext in enumerate(ext_list):
+        match ext:
+            case EncryptedClientHelloClientExtension() as ech_ext:
+                match ech_ext.data.variant:
+                    case OuterECHClientHello() as oech_ext:
+                        break
+    return None #FIXME TODO
 
 
 def decode_inner(encoded: bytes, outer: ClientHelloHandshake) -> ClientHelloHandshake:
