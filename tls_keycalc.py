@@ -2,6 +2,7 @@
 
 Includes code for pre-shared keys (i.e. tickets)."""
 
+from typing import Self
 import time
 import json
 import os
@@ -42,6 +43,7 @@ from tls_crypto import (
     hkdf_expand_label,
     derive_secret,
     Hasher,
+    HashObject,
     DEFAULT_KEX_MODES,
 )
 
@@ -141,47 +143,93 @@ class PskExtFactory:
 
 HSTLookup = tuple[HandshakeTypes,bool] | HandshakeTypes | int
 
-class HandshakeTranscript:
-    def __init__(self) -> None:
-        self._hash_alg: Hasher|None = None
-        self._backlog: list[tuple[HandshakeVariant,bool]] = []
+@dataclass
+class _HashAlgNotSet:
+    backlog : list[tuple[HandshakeVariant, bool]] = field(default_factory=list)
 
-    @property
-    def hash_alg(self) -> Hasher:
-        assert self._hash_alg is not None
-        return self._hash_alg
+    def clear(self) -> None:
+        self.backlog = []
 
-    @hash_alg.setter
-    def hash_alg(self, ha: Hasher) -> None:
-        assert self._hash_alg is None
-        self._hash_alg = ha
-        self._running = self._hash_alg.hasher()
-        self._history: list[bytes] = [self._running.digest()]
-        self._lookup: dict[tuple[HandshakeTypes, bool], bytes] = {}
-        for hs, from_client in self._backlog:
-            self.add(hs, from_client)
-        del self._backlog
+@dataclass
+class _RunningHash:
+    hash_alg: Hasher
+    running: HashObject
+    history: list[bytes] = field(default_factory=list)
+    lookup: dict[tuple[HandshakeTypes, bool], bytes] = field(default_factory=dict)
+
+    @classmethod
+    def start(cls, ha: Hasher, initial: _HashAlgNotSet) -> Self:
+        rh = cls(hash_alg = ha, running = ha.hasher())
+        for hs, from_client in initial.backlog:
+            rh.add(hs, from_client)
+        return rh
+
+    def clear(self) -> None:
+        self.running = self.hash_alg.hasher()
+        self.history = []
+        self.lookup = {}
 
     def add_partial(self, data: bytes) -> bytes:
-        self._running.update(data)
-        return self._running.digest()
+        self.running.update(data)
+        return self.running.digest()
 
     def add(self, hs: HandshakeVariant, from_client: bool) -> None:
-        if self._hash_alg is None:
-            self._backlog.append((hs, from_client))
-        else:
-            current = self.add_partial(hs.pack())
-            self._lookup[hs.typ, from_client] = current
-            self._history.append(current)
+        current = self.add_partial(hs.pack())
+        self.lookup[hs.typ, from_client] = current
+        self.history.append(current)
 
     def __getitem__(self, key: HSTLookup) -> bytes:
         match key:
             case tuple():
-                return self._lookup[key]
+                return self.lookup[key]
             case HandshakeTypes():
-                return self._lookup[key, False]
+                return self.lookup[key, False]
             case int():
-                return self._history[key]
+                return self.history[key]
+
+@dataclass
+class HandshakeTranscript:
+    _data: _HashAlgNotSet | _RunningHash = field(default_factory=_HashAlgNotSet)
+
+    @property
+    def hash_alg(self) -> Hasher:
+        match self._data:
+            case _RunningHash(hash_alg=ha):
+                return ha
+            case _:
+                raise ValueError("hash_alg not yet set")
+
+    @hash_alg.setter
+    def hash_alg(self, ha: Hasher) -> None:
+        match self._data:
+            case _HashAlgNotSet() as initial:
+                self._data = _RunningHash.start(ha, initial)
+            case _:
+                raise ValueError("hash_alg already set")
+
+    def clear(self) -> None:
+        self._data.clear()
+
+    def add_partial(self, data: bytes) -> bytes:
+        match self._data:
+            case _RunningHash() as rh:
+                return rh.add_partial(data)
+            case _:
+                raise ValueError("can't add partial until hash_alg is set")
+
+    def add(self, hs: HandshakeVariant, from_client: bool) -> None:
+        match self._data:
+            case _HashAlgNotSet(backlog=backlog):
+                backlog.append((hs, from_client))
+            case _RunningHash() as rh:
+                rh.add(hs, from_client)
+
+    def __getitem__(self, key: HSTLookup) -> bytes:
+        match self._data:
+            case _RunningHash() as rh:
+                return rh[key]
+            case _:
+                raise ValueError("can't lookup until hash_alg is set")
 
 class KeyCalcMissing(KeyError):
     def __init__(self, member_name: str) -> None:

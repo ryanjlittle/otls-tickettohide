@@ -71,6 +71,11 @@ def encode_inner(
     return encoded_ch + b'\x00'*padding
 
 
+def _hpke_alg_info(config: ECHConfigVariant) -> bytes:
+    """Produces the 'info' field for calling setup_base_*()."""
+    return b'tls ech' + b'\x00' + config.pack()
+
+
 @dataclass
 class _EchExtBuilder:
     orig: ClientHelloHandshake
@@ -91,7 +96,9 @@ class _EchExtBuilder:
         else:
             raise ValueError("no outer ECH extension found in original client hello")
 
-    def fill(self, payload: bytes) -> ClientHelloHandshake:
+    def fill(self, payload: bytes|None) -> ClientHelloHandshake:
+        if payload is None:
+            payload = b'\x00' * len(self.ech.data.payload)
         assert len(self.ech.data.payload) == len(payload), "payload length should match original"
         filled_ech = EncryptedClientHelloClientExtension.create(self.ech.replace(payload=payload))
         new_exts = self.exts[:self.index] + (filled_ech,) + self.exts[self.index+1:]
@@ -153,7 +160,7 @@ class OuterPrep:
     def _hpke_setup(self) -> tuple[bytes, ContextS]:
         return self._hpke_alg.setup_base_s(
             pubkey_r = self._cdata.key_config.public_key,
-            info = b'tls ech' + b'\x00' + self.config.pack(),
+            info = _hpke_alg_info(self.config),
         )
 
     @property
@@ -199,25 +206,6 @@ class OuterPrep:
         return builder.fill(ct)
 
 
-def try_get_inner(outer: ClientHelloHandshake, secrets: list[EchSecrets]) -> ClientHelloHandshake|None:
-    configs: dict[int, tuple[EchKeyConfig, bytes]] = {}
-    for esec in secrets:
-        match esec.config:
-            case Draft24ECHConfig(data=config):
-                configs[config.key_config.config_id] = (config.key_config, esec.private_key)
-            case _:
-                logger.warning(f"Ignoring unsupported ECH config {esec.config}")
-
-    ext_list: list[ClientExtensionVariant] = list(outer.data.extensions.uncreate())
-    for index, ext in enumerate(ext_list):
-        match ext:
-            case EncryptedClientHelloClientExtension() as ech_ext:
-                match ech_ext.data.variant:
-                    case OuterECHClientHello() as oech_ext:
-                        break
-    return None #FIXME TODO
-
-
 def decode_inner(encoded: bytes, outer: ClientHelloHandshake) -> ClientHelloHandshake:
     if get_ech_type(outer) != EchType.OUTER:
         raise ValueError("expected outer to be an outer client hello")
@@ -235,7 +223,53 @@ def decode_inner(encoded: bytes, outer: ClientHelloHandshake) -> ClientHelloHand
         raise ValueError("decoded client hello should have type inner")
     return inner
 
-def ech_confirmation(chello_inner: ClientHelloHandshake, shello: ServerHelloHandshake) -> bytes:
+
+def try_get_inner(outer: ClientHelloHandshake, secrets: Iterable[EchSecrets]) -> ClientHelloHandshake|None:
+    """Given a CH message received by the server, along with the server ECH secrets,
+    attempts to decrypt and decode the inner client hello."""
+
+    builder = _EchExtBuilder(outer)
+
+    for esec in secrets:
+        match esec.config:
+            case Draft24ECHConfig(data=config):
+                if config.key_config.config_id == builder.ech.data.config_id:
+                    logger.info(f"Matching ECH config with id {builder.ech.data.config_id} found by server")
+                    break
+            case _:
+                logger.warning(f"Ignoring unsupported ECH config {esec.config}")
+    else:
+        logger.info(f"Server secrets have no config id {builder.ech.data.config_id}; ECH rejected")
+        return None
+
+    if builder.ech.data.cipher_suite not in config.key_config.cipher_suites:
+        logger.warning(f"client-selected ECH cipher suite mismatch")
+        return None
+
+    hpke_alg = get_hpke_alg(
+        kem_id = config.key_config.kem_id,
+        csuite = builder.ech.data.cipher_suite,
+    )
+
+    #TODO error check for bad key
+    enc_context = hpke_alg.setup_base_r(
+        enc = builder.ech.data.enc,
+        privkey_r = esec.private_key,
+        info = _hpke_alg_info(esec.config),
+    )
+
+    aad = ClientHelloHandshakeData.pack(builder.fill(payload=None).data)
+
+    #TODO error check for bad key
+    ptext = enc_context.open(
+        aad = aad,
+        ct = builder.ech.data.payload,
+    )
+
+    return decode_inner(encoded=ptext, outer=outer)
+
+
+def _ech_conf(chello_inner: ClientHelloHandshake, shello: ServerHelloHandshake) -> bytes:
     hash_alg = get_hash_alg(shello.data.cipher_suite)
 
     sr2 = shello.data.server_random[:-8] + b'\x00'*8
@@ -259,7 +293,12 @@ def ech_confirmation(chello_inner: ClientHelloHandshake, shello: ServerHelloHand
         length   = 8,
     )
 
+def set_shello_ech(chello_inner: ClientHelloHandshake, shello: ServerHelloHandshake) -> ServerHelloHandshake:
+    """Modifies the server_random field in the SH to indicate ECH acceptance."""
+    return shello.replace(
+        server_random = shello.data.server_random[:-8] + _ech_conf(chello_inner, shello))
+
 def server_accepts_ech(chello_inner: ClientHelloHandshake, shello: ServerHelloHandshake) -> bool:
     if get_ech_type(chello_inner) != EchType.INNER:
         raise ValueError("must use inner client hello to check ech acceptance")
-    return shello.data.server_random[-8:] == ech_confirmation(chello_inner, shello)
+    return shello.data.server_random[-8:] == _ech_conf(chello_inner, shello)
