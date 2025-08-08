@@ -56,6 +56,8 @@ class ServerStates(enum.IntEnum):
     WAIT_CV = 6
     WAIT_FINISHED = 7
     CONNECTED = 8
+    CLOSED = 9
+    ERROR = 10
 
     def parent(self) -> 'ServerState':
         return ServerState(value=self.value)
@@ -75,6 +77,8 @@ class ServerState(spec._NamedConstBase[ServerStates]):
     WAIT_CV: 'ServerState'
     WAIT_FINISHED: 'ServerState'
     CONNECTED: 'ServerState'
+    CLOSED: 'ServerState'
+    ERROR: 'ServerState'
 
     def __init__(self, value: int) -> None:
         self._subclass_init(value)
@@ -2069,7 +2073,7 @@ class B16SeqHpkeSymmetricCipherSuite(BoundedSeqHpkeSymmetricCipherSuite):
     _LENGTH_TYPES = (Uint16, )
 
 @dataclass(frozen=True)
-class KeyConfig(spec._StructBase):
+class EchKeyConfig(spec._StructBase):
     _member_names: ClassVar[tuple[str,...]] = ('config_id','kem_id','public_key','cipher_suites',)
     _member_types: ClassVar[tuple[type[Spec],...]] = (Uint8,HpkeKemId,B16Raw,B16SeqHpkeSymmetricCipherSuite,)
     config_id: Uint8
@@ -2179,18 +2183,18 @@ class B16SeqExtension(BoundedSeqExtension):
 @dataclass(frozen=True)
 class Draft24ECHConfigData(spec._StructBase):
     _member_names: ClassVar[tuple[str,...]] = ('key_config','maximum_name_length','public_name','extensions',)
-    _member_types: ClassVar[tuple[type[Spec],...]] = (KeyConfig,Uint8,B8String,B16SeqExtension,)
-    key_config: KeyConfig
+    _member_types: ClassVar[tuple[type[Spec],...]] = (EchKeyConfig,Uint8,B8String,B16SeqExtension,)
+    key_config: EchKeyConfig
     maximum_name_length: Uint8
     public_name: B8String
     extensions: B16SeqExtension
 
     def replace(self, key_config:tuple[int,int|HpkeKemId,bytes,Iterable[tuple[int|HpkeKdfId,int|HpkeAeadId]]]|None=None, maximum_name_length:int|None=None, public_name:str|None=None, extensions:Iterable[tuple[int|ECHConfigExtensionType,bytes]]|None=None) -> Self:
-        return type(self)((self.key_config if key_config is None else KeyConfig.create(*key_config)), (self.maximum_name_length if maximum_name_length is None else Uint8.create(maximum_name_length)), (self.public_name if public_name is None else B8String.create(public_name)), (self.extensions if extensions is None else B16SeqExtension.create(extensions)))
+        return type(self)((self.key_config if key_config is None else EchKeyConfig.create(*key_config)), (self.maximum_name_length if maximum_name_length is None else Uint8.create(maximum_name_length)), (self.public_name if public_name is None else B8String.create(public_name)), (self.extensions if extensions is None else B16SeqExtension.create(extensions)))
 
     @classmethod
     def create(cls,key_config:tuple[int,int|HpkeKemId,bytes,Iterable[tuple[int|HpkeKdfId,int|HpkeAeadId]]],maximum_name_length:int,public_name:str,extensions:Iterable[tuple[int|ECHConfigExtensionType,bytes]]) -> Self:
-        return cls(key_config=KeyConfig.create(*key_config), maximum_name_length=Uint8.create(maximum_name_length), public_name=B8String.create(public_name), extensions=B16SeqExtension.create(extensions))
+        return cls(key_config=EchKeyConfig.create(*key_config), maximum_name_length=Uint8.create(maximum_name_length), public_name=B8String.create(public_name), extensions=B16SeqExtension.create(extensions))
 
     def uncreate(self) -> tuple[tuple[int,int|HpkeKemId,bytes,Iterable[tuple[int|HpkeKdfId,int|HpkeAeadId]]], int, str, Iterable[tuple[int|ECHConfigExtensionType,bytes]]]:
         return (self.key_config.uncreate(), self.maximum_name_length.uncreate(), self.public_name.uncreate(), self.extensions.uncreate())
