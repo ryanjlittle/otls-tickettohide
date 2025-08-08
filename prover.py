@@ -1,38 +1,25 @@
-"""
-Abstract base class for prover. Must be concretely instantiated by a child class that defines the client/server
-interaction protocol and the predicate to be proved on the response.
-"""
-from abc import ABC, abstractmethod
-from concurrent.futures import ThreadPoolExecutor
 from enum import IntEnum
 
-from mpc_tls import TrustedParty
+from mpc_tls import HandshakeSecretTrustedParty, MasterSecretTrustedParty
 from proof_common import *
-from proof_connections import VerifierConnection, obtain_tickets
-from proof_crypto import ProverClient
-from proof_spec import VerifierMsgType, VerifierMsg, ProverMsgType, VerifierMsgTypes, KexSharesPhase1VerifierMsg, \
-    ServerHandshakeTxProverMsg, Hash1SProverMsg, Hash4SProverMsg
-from tls13_spec import CipherSuite, NamedGroup
+from proof_connections import VerifierConnection
+from proof_spec import TicketsVerifierMsg, KexSharesProverMsg, HandshakeSecretsVerifierMsg, MasterSecretsVerifierMsg
+from prover_crypto import ProverSecrets, ProverCryptoManager
 from tls_common import *
+from tls_server import ServerID
 
 
 class ProverState(IntEnum):
-    INIT                 = 0
-    WAIT_VER_DH_PHASE_1  = 1
-    WAIT_SH_PHASE_1      = 2
-    WAIT_HS_KEYS         = 3
-    WAIT_APP_KEYS        = 4
-    WAIT_TICKET          = 5
-    PHASE_1_DONE         = 6
-    WAIT_2PC_BINDER_KEY  = 7
-    WAIT_VER_DH_PHASE_2  = 8
-    WAIT_SH_PHASE_2      = 9
-    WAIT_2PC_HS_KEY      = 10
-    WAIT_VER_SECRETS     = 11
-    WAIT_SERV_APP_DATA   = 12
-    WAIT_2PC_TLS         = 13
-    WAIT_VER_DH_SECRET   = 14
-    DONE                 = 15
+    INIT              = 0
+    GET_ECH           = 1
+    WAIT_TICKETS      = 2
+    WAIT_SH           = 3
+    WAIT_2PC_HS_HKDF  = 4
+    WAIT_2PC_APP_HKDF = 5
+    WAIT_2PC_ENC      = 6
+    WAIT_RESPONSE     = 7
+    WAIT_KEY_SHARES   = 8
+    DONE              = 9
 
     def __str__(self):
         return self.name
@@ -44,251 +31,149 @@ class ProverState(IntEnum):
             raise StopIteration('no next state')
 
 
-class Prover(ABC):
-    def __init__(self, server_ids, real_idx, query_secret, host='localhost', port=0, ciphersuite=CipherSuite.TLS_AES_128_GCM_SHA256, group=NamedGroup.X25519, rseed=None):
-        self._server_ids = server_ids
-        self._real_idx = real_idx
-        self._query_secret = query_secret
-        self.host = host
-        self._pport = port
-        self.port = port if port != 0 else None # If port 0 is specified, the real port will be dynamically assigned later
-        self._ciphersuite = ciphersuite
-        self._group = group
-        self._rseed = rseed
-        self._num_servers = len(server_ids)
+class Prover:
+    servers: list[ServerID]
+    secrets: ProverSecrets
+    verifier_connection: VerifierConnection
+    crypto_manager: ProverCryptoManager
+    state: ProverState = ProverState.INIT
+    rseed: int|None = None
 
-        self._ticket_clients = [ProverClient(sid, ciphersuite, group, rseed) for sid in self._server_ids]
-        self._resumption_client = ProverClient(server_ids[real_idx], ciphersuite, group, rseed)
-        self._verifier_connection = VerifierConnection(self.host, self._pport)
+    def __init__(self,
+                 servers: list[ServerID],
+                 secrets: ProverSecrets,
+                 hostname: str = 'localhost',
+                 port: int = 9000,
+                 rseed: int|None = None,
+                 ) -> None:
+        self.servers = servers
+        self.secrets = secrets
+        self.rseed = rseed
+        self.verifier_connection = VerifierConnection(hostname, port)
+        self.crypto_manager = ProverCryptoManager(servers, secrets, rseed)
 
-        self.listening = False
-        self._state = ProverState.INIT
+    def __enter__(self) -> Self:
+        self.crypto_manager.create_sockets()
+        self.verifier_connection.create_socket()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.crypto_manager.close_sockets()
+        self.verifier_connection.close()
 
     @property
-    def handler(self):
+    def listening(self) -> bool:
+        return self.verifier_connection.listening
+
+    def increment_state(self):
+        self.state = self.state.next()
+
+    @property
+    def handler(self) -> dict[ProverState, Callable]:
         return {
-            ProverState.INIT                 : self._begin,
-            ProverState.WAIT_VER_DH_PHASE_1  : self._process_ver_dh_phase_1,
-            ProverState.WAIT_SH_PHASE_1      : self._process_sh_phase_1,
-            ProverState.WAIT_HS_KEYS         : self._process_hs_keys,
-            ProverState.WAIT_APP_KEYS        : self._process_app_keys,
-            ProverState.WAIT_TICKET          : self._process_ticket,
-            ProverState.PHASE_1_DONE         : self._gen_dummy_secrets,
-            ProverState.WAIT_2PC_BINDER_KEY  : self._2pc_binder_key,
-            ProverState.WAIT_VER_DH_PHASE_2  : self._process_ver_dh_phase_2,
-            ProverState.WAIT_SH_PHASE_2      : self._process_sh_phase_2,
-            ProverState.WAIT_2PC_HS_KEY      : self._2pc_handshake_key,
-            ProverState.WAIT_VER_SECRETS     : self._process_ver_secrets,
-            ProverState.WAIT_SERV_APP_DATA   : self._process_server_response,
-            ProverState.WAIT_2PC_TLS         : self._2pc_TLS,
-            ProverState.WAIT_VER_DH_SECRET   : self._process_ver_dh_secret
+            ProverState.INIT                : self.preprocess,
+            ProverState.GET_ECH             : self.get_ech_configs,
+            ProverState.WAIT_TICKETS        : self.process_tickets,
+            ProverState.WAIT_SH             : self.process_sh,
+            ProverState.WAIT_2PC_HS_HKDF    : self.twopc_handshake_hkdf,
+            ProverState.WAIT_2PC_APP_HKDF   : self.twopc_application_hkdf,
+            ProverState.WAIT_2PC_ENC        : self.twopc_encryption,
+            ProverState.WAIT_RESPONSE       : self.process_response,
+            ProverState.WAIT_KEY_SHARES     : self.process_key_share,
         }
 
-    def close_all(self):
-        for client in self._ticket_clients:
-            client.close()
-        self._verifier_connection.close()
 
-    def listen(self):
-        if self.listening:
-            raise ProverError('already listening')
-        self._verifier_connection.bind()
-        self.port = self._verifier_connection.port
-        self.listening = True
-        self._verifier_connection.accept()
-
-    def run(self):
-        assert self._state == ProverState.INIT
-        while self._state < ProverState.DONE:
-            self.handler[self._state]()
-        self.close_all()
+    def run(self) -> None:
+        assert self.state == ProverState.INIT
+        while self.state < ProverState.DONE:
+            self.handler[self.state]()
         logger.info('prover finished')
 
-    def _increment_state(self):
-        self._state = self._state.next()
+    def preprocess(self) -> None:
+        assert self.state == ProverState.INIT
+        # TODO: we'll do MPC preprocessing here later
+        self.increment_state()
 
-    def _send_to_verifier(self, msg):
-        self._verifier_connection.send_msg(msg)
+    def get_ech_configs(self) -> None:
+        assert self.state == ProverState.GET_ECH
+        self.crypto_manager.obtain_ech_configs()
+        logger.info('prover obtained all ECH configs')
 
-    def _begin(self):
-        assert self._state == ProverState.INIT
-        if len(self._server_ids) == 0:
-            raise ProverError('no serverIDs specified')
-        with ThreadPoolExecutor() as executor:
-            self._dummy_tickets = list(executor.map(obtain_tickets, self._server_ids))
-        logger.info('obtained dummy tickets')
-        self._increment_state()
-        self.listen()
+        self.increment_state()
+        self.verifier_connection.listen()
 
-    def _process_ver_dh_phase_1(self):
-        assert self._state == ProverState.WAIT_VER_DH_PHASE_1
-        msg = self._verifier_connection.recv_msg()
-        if not isinstance(msg.value, KexSharesPhase1VerifierMsg):
-            raise ProverError(f'received unexpected message from verifier: {msg.typ}')
-        dh_shares = msg.data.kex_shares
-        logger.info(f'received Diffie-Hellman shares from verifier: {dh_shares}')
-        for (client, share) in zip(self._ticket_clients, dh_shares):
-            client.set_kex_share(share)
+    def process_tickets(self) -> None:
+        assert self.state == ProverState.WAIT_TICKETS
+        msg = self.verifier_connection.recv_msg()
+        if not isinstance(msg, TicketsVerifierMsg):
+            raise ProverError(f'received unexpected message type: {msg.typ}')
 
-        self._increment_state()
+        self.crypto_manager.build_ech_configs(list(msg.data))
+        self.increment_state()
 
-    def _process_sh_phase_1(self):
-        assert self._state == ProverState.WAIT_SH_PHASE_1
+    def process_sh(self) -> None:
+        assert self.state == ProverState.WAIT_SH
+        self.crypto_manager.send_and_recv_hellos()
 
-        with ThreadPoolExecutor(thread_name_prefix='prover') as executor:
-            futures = [executor.submit(client.send_and_recv_hellos) for client in self._ticket_clients]
-            for f in futures:
-                f.result()
+        kex_shares = self.crypto_manager.server_key_shares
+        msg = KexSharesProverMsg.create(kex_shares)
+        self.verifier_connection.send_msg(msg)
 
-        transcripts = [client.get_encrypted_server_msgs() for client in self._ticket_clients]
-        tx_message = ServerHandshakeTxProverMsg.create(transcripts)
-        self._send_to_verifier(tx_message)
+        self.increment_state()
 
-        hashes = [client.get_hash1() for client in self._ticket_clients]
-        hash_message = Hash1SProverMsg.create(hashes)
-        self._send_to_verifier(hash_message)
+    def twopc_handshake_hkdf(self) -> None:
+        assert self.state == ProverState.WAIT_2PC_HS_HKDF
+        # TODO: replace with actual MPC
+        msg = self.verifier_connection.recv_msg()
+        if not isinstance(msg, HandshakeSecretsVerifierMsg):
+            raise ProverError(f'received unexpected message type: {msg.typ}')
+        trusted_party = HandshakeSecretTrustedParty()
+        hash_val = self.crypto_manager.real_server_handshake_hash
+        trusted_party.prover_input = (self.secrets.index, hash_val)
+        trusted_party.verifier_input = list(msg.data.uncreate())
+        trusted_party.compute()
+        handshake_secs, chts, shts = trusted_party.prover_output
 
-        self._increment_state()
+        self.crypto_manager.set_dummy_handshake_secets(handshake_secs)
+        self.crypto_manager.set_chts_shts(chts, shts)
 
-    def _process_hs_keys(self):
-        assert self._state == ProverState.WAIT_HS_KEYS
+        self.crypto_manager.finish_handshakes()
 
-        msg = self._verifier_connection.recv_msg()
-        if msg.typ != VerifierMsgType.HANDSHAKE_KEYS:
-            raise ProverError(f'received unexpected message from verifier.')
+        self.increment_state()
 
-        hs_secrets = msg.body
-        hashes = []
-        for (client, (chts, shts)) in zip(self._ticket_clients, hs_secrets):
-            client.set_handshake_secrets(chts, shts)
-            client.send_client_finished()
-            hashes.append(client.get_hash4())
+    def twopc_application_hkdf(self) -> None:
+        assert self.state == ProverState.WAIT_2PC_APP_HKDF
+        # TODO: replace with actual MPC
+        msg = self.verifier_connection.recv_msg()
+        if not isinstance(msg, MasterSecretsVerifierMsg):
+            raise ProverError(f'received unexpected message type: {msg.typ}')
+        trusted_party = MasterSecretTrustedParty()
+        hash_val = self.crypto_manager.real_server_application_hash
+        trusted_party.prover_input = (self.secrets.index, hash_val)
+        trusted_party.verifier_input = list(msg.data.uncreate())
+        trusted_party.compute()
+        secrets, ck_share, civ, sk_share, siv = trusted_party.prover_output
 
-        hash_message = Hash4SProverMsg.create(hashes)
-        self._send_to_verifier(hash_message)
+        # check received master secrets against locally computed values
+        computed_secrets = self.crypto_manager.dummy_master_secrets
+        for i, (received_sec, comptued_sec) in enumerate(zip(secrets, computed_secrets)):
+            if i == self.secrets.index:
+                continue
+            if received_sec != comptued_sec:
+                raise ProverError('received master secret mismatch')
 
-        self._increment_state()
+        logger.info('dummy master secrets verified')
 
-    def _process_app_keys(self):
-        assert self._state == ProverState.WAIT_APP_KEYS
+        self.increment_state()
 
-        msg = self._verifier_connection.recv_msg()
-        if msg.typ != VerifierMsgType.APPLICATION_KEYS:
-            raise ProverError(f'received unexpected message from verifier.')
+    def twopc_encryption(self) -> None:
+        assert self.state == ProverState.WAIT_2PC_ENC
+        self.increment_state()
 
-        app_secrets = msg.body
+    def process_response(self) -> None:
+        assert self.state == ProverState.WAIT_RESPONSE
+        self.increment_state()
 
-        for (client, (chts, shts)) in zip(self._ticket_clients, app_secrets):
-            client.set_application_secrets(chts, shts)
-
-        self._increment_state()
-
-    def _process_ticket(self):
-        assert self._state == ProverState.WAIT_TICKET
-
-        for client in self._ticket_clients:
-            client.process_ticket()
-            # TODO: remove this
-            client.send(b'ping')
-            resp = client.recv(128)
-            logger.info(f'got response: {resp}')
-
-        self._increment_state()
-
-    def _gen_dummy_secrets(self):
-        assert self._state == ProverState.PHASE_1_DONE
-        self._increment_state()
-
-    def _2pc_binder_key(self):
-        # TODO: This is currently using a trusted party, need to replace this with real 2PC
-        assert self._state == ProverState.WAIT_2PC_BINDER_KEY
-
-        msg = self._verifier_connection.recv_msg()
-        if msg.typ != VerifierMsgType.MASTER_SECRETS:
-            raise ProverError(f'received unexpected message from verifier.')
-
-        master_secrets = msg.body
-
-        self._trusted_party = TrustedParty()
-        self._trusted_party.server_idx = self._real_idx
-        self._trusted_party.hash5 = self._ticket_clients[self._real_idx].get_hash5()
-        self._trusted_party.ticket_nonce = self._ticket_clients[self._real_idx].tickets[0].ticket_nonce
-        self._trusted_party.master_secrets = master_secrets
-
-        binder_key = self._trusted_party.compute_binder_key()
-
-        logger.info(f'trusted party computed binder key: {binder_key}')
-
-        ticket = self._ticket_clients[self._real_idx].tickets[0]
-        self._resumption_client.set_resumption_secrets(binder_key, ticket)
-
-        self._increment_state()
-
-    def _process_ver_dh_phase_2(self):
-        assert self._state == ProverState.WAIT_VER_DH_PHASE_2
-
-        msg = self._verifier_connection.recv_msg()
-        if msg.typ != VerifierMsgType.DH_SHARE_PHASE_2:
-            raise ProverError(f'received unexpected message from verifier.')
-        dh_share = msg.body
-        self._resumption_client.set_kex_share(dh_share)
-
-        self._increment_state()
-
-    def _process_sh_phase_2(self):
-        assert self._state == ProverState.WAIT_SH_PHASE_2
-
-        self._resumption_client.send_and_recv_hellos()
-
-        transcript = self._resumption_client.get_encrypted_server_msgs()
-        tx_message = ServerHandshakeTxProverMsg.create(transcript)
-        self._send_to_verifier(tx_message)
-
-        # TODO: need to send a commitment to this hash, right now sending it in the clear
-        hash1 = self._resumption_client.get_hash1()
-        hash_message = Hash1SProverMsg.create([hash1])
-        self._send_to_verifier(hash_message)
-
-        self._increment_state()
-
-    def _2pc_handshake_key(self):
-        assert self._state == ProverState.WAIT_SH_PHASE_2
-
-        # TODO: actually do 2PC, right now using trusted party
-        self._trusted_party.hash1 = self._resumption_client.get_hash1()
-        chts, shts = self._trusted_party.compute_application_keys()
-
-        self._resumption_client.set_handshake_secrets(chts, shts)
-        self._resumption_client.send_client_finished()
-
-        self._increment_state()
-
-    def _process_ver_secrets(self):
-        assert self._state == ProverState.WAIT_VER_SECRETS
-        self._increment_state()
-
-    def _process_server_response(self):
-        assert self._state == ProverState.WAIT_SERV_APP_DATA
-        self._increment_state()
-
-    def _2pc_TLS(self):
-        assert self._state == ProverState.WAIT_2PC_TLS
-        self._increment_state()
-
-    def _process_ver_dh_secret(self):
-        assert self._state == ProverState.WAIT_VER_DH_SECRET
-        self._increment_state()
-
-    @abstractmethod
-    def run_protocol(self):
-        pass
-
-    @abstractmethod
-    def make_proof(self):
-        pass
-
-class HttpsProver(Prover):
-    def run_protocol(self):
-        pass
-    def make_proof(self):
-        pass
+    def process_key_share(self) -> None:
+        assert self.state == ProverState.WAIT_KEY_SHARES
+        self.increment_state()

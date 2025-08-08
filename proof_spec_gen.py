@@ -1,54 +1,51 @@
 from textwrap import dedent
 
-from spec import Raw
-from spec_gen import GenSpec, NamedConst, Select, Sequence, Struct, Bounded, FixRaw, Names, FORCE_RANK, SourceGen
-from tls13_spec import Record
+from spec import Raw, String
+from spec_gen import GenSpec, NamedConst, Select, Sequence, Struct, Bounded, FixRaw, Names, FORCE_RANK, SourceGen, Maybe
+from tls13_spec import Record, ClientHelloHandshake, TicketInfo, NamedGroup, KeyShareEntry
 from util import kwdict
 
 specs: dict[str, GenSpec] = kwdict(
+    ClientHelloValues=Struct(
+        hostname=Bounded(8, String),
+        ticket_info=TicketInfo,
+        binder_key=Bounded(8, Raw),
+        kex_shares=Bounded(16, Sequence(KeyShareEntry))
+    ),
+
     ProverMsgType = NamedConst(8)(
-        SERVER_HANDSHAKE_TX = 1,
-        HASH_1S             = 2,
-        HASH_4S             = 3,
-        COMMITMENT          = 4,
-        KEX_SHARES          = 5,
-        PROOF               = 6,
-        CLIENT_RANDOMS      = 7,
+        KEX_SHARES = 1,
+        COMMITMENT = 2,
+        PROOF      = 3,
+        KEY_SHARE_TEST1 = 4,
+        KEY_SHARE_TEST2 = 5,
     ),
 
     VerifierMsgType = NamedConst(8)(
-        KEX_SHARES_PHASE_1 = 1,
-        HANDSHAKE_KEYS     = 2,
-        APPLICATION_KEYS   = 3,
-        KEX_SHARE_PHASE_2  = 4,
-        KEX_SECRETS        = 5,
-        MASTER_SECRETS     = 99, # for testing purposes only!
+        TICKETS           = 1,
+        APP_KEY_SHARES    = 2,
+        HANDSHAKE_SECRETS = 98, # for testing
+        MASTER_SECRETS    = 99, # for testing
     ),
 
-    ProverMsg = Select('ProverMsgType', 24)(
-        SERVER_HANDSHAKE_TX = Sequence(Struct(
-                server_hello = Record,
-                encrypted_extensions = Record,
-                certificate = Record,
-                cert_verify = Record,
-                server_finished = Record
-            )),
-        HASH_1S = Struct(hashes = Sequence(FixRaw(32))),
-        HASH_4S = Struct(hashes = Sequence(FixRaw(32))),
-        COMMITMENT = Struct(commitment = Raw),
-        KEX_SHARES = Struct(kex_shares = Sequence(FixRaw(32))),
-        PROOF = Struct(proof = Raw),
-        CLIENT_RANDOMS = Struct(cli_randoms = Sequence(FixRaw(32))),
+    ProverMsg = Select('ProverMsgType', 16)(
+        KEX_SHARES =
+            Sequence(Bounded(16, Sequence(Struct(group=NamedGroup, pubkey=Bounded(16, Raw))))),
+        COMMITMENT = Struct(commitment = Bounded(16, Raw)),
+        PROOF = Struct(proof = Bounded(16, Raw)),
+        KEY_SHARE_TEST1 = Struct(share = KeyShareEntry),
+        KEY_SHARE_TEST2 = Struct(group = NamedGroup, pubkey = Bounded(16, Raw)),
     ),
 
     VerifierMsg = Select('VerifierMsgType', 16)(
-        KEX_SHARES_PHASE_1 = Struct(kex_shares = Bounded(16, Sequence(FixRaw(32)))),
-        HANDSHAKE_KEYS = Sequence(Struct(chts = FixRaw(32), shts = FixRaw(32))),
-        APPLICATION_KEYS = Sequence(Struct(cats = FixRaw(32), sats = FixRaw(32))),
-        KEX_SHARE_PHASE_2  = Struct(kex_share = FixRaw(32)),
-        KEX_SECRETS        = Struct(kex_secrets = Sequence(FixRaw(32))),
-        MASTER_SECRETS     = Struct(secrets = Sequence(Bounded(8, Raw))), # for testing purposes only!
-    )
+        TICKETS = Sequence('ClientHelloValues'),
+        APP_KEY_SHARES = Struct(
+            server_key_share = Bounded(8, Raw),
+            client_key_share = Bounded(8, Raw),
+        ),
+        HANDSHAKE_SECRETS=Sequence(Struct(secret=Bounded(8, Raw))),  # for testing purposes only!
+        MASTER_SECRETS = Sequence(Struct(secret=Bounded(8, Raw))), # for testing purposes only!
+    ),
 )
 
 

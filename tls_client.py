@@ -1,19 +1,15 @@
 """High-level logic for TLS 1.3 client-side handshake."""
 
-import time
-from collections import namedtuple
-from collections.abc import Iterable, Iterator
-from typing import Self, Any, override, ClassVar
 import dataclasses
-from dataclasses import dataclass, field
-from contextlib import contextmanager
-from secrets import SystemRandom
-from random import Random
-import socket
 import enum
+import socket
+from collections.abc import Iterator
+from contextlib import contextmanager
+from random import Random
+from secrets import SystemRandom
+from typing import ClassVar
 
 from spec import UnpackError
-from tls_common import *
 from tls13_spec import (
     ClientStates,
     ClientSecrets,
@@ -36,7 +32,6 @@ from tls13_spec import (
     NewSessionTicketHandshake,
 
     ExtensionTypes,
-    ClientExtension,
     ClientExtensionVariant,
     ServerNameClientExtension,
     GenericClientExtension,
@@ -55,36 +50,32 @@ from tls13_spec import (
     SupportedGroupsServerExtension,
     EncryptedClientHelloServerExtension,
 
-    ECHClientHelloType,
     OuterECHClientHello,
     InnerECHClientHello,
 
     CipherSuite,
     NamedGroup,
-    SignatureScheme,
     PskKeyExchangeMode,
-    HpkeKdfId,
-    HpkeAeadId,
-
     ECHConfigVariant,
     Draft24ECHConfig,
 )
+from tls_common import *
 from tls_crypto import (
     get_kex_alg,
     get_sig_alg,
     get_hash_alg,
     get_cipher_alg,
     extract_x509_pubkey,
-    KexAlg,
     DEFAULT_KEX_GROUPS,
     DEFAULT_KEX_MODES,
     DEFAULT_SIGNATURE_SCHEMES,
     DEFAULT_CIPHER_SUITES,
     DEFAULT_HPKE_CSUITES,
 )
+from tls_ech import OuterPrep, server_accepts_ech
+from tls_keycalc import KeyCalc, HandshakeTranscript, PskExtFactory
 from tls_records import (
     RecordTranscript,
-    DataBuffer,
     RecordReader,
     RecordWriter,
     HandshakeBuffer,
@@ -96,8 +87,6 @@ from tls_records import (
     PayloadProcessor,
     CCS_MESSAGE,
 )
-from tls_keycalc import KeyCalc, HandshakeTranscript, PskExtFactory
-from tls_ech import EchType, OuterPrep, server_accepts_ech
 
 DEFAULT_CLIENT_OPTIONS = ClientOptions.create(
     send_sni = True,
@@ -345,11 +334,11 @@ def build_client_hello(
 @dataclass
 class ClientHandshake(AbstractHandshake, PayloadProcessor):
     chello         : ClientHelloHandshake
+    inner_ch       : ClientHelloHandshake|None    = None
     state          : ClientStates                 = ClientStates.START
     psk            : bytes|None                   = None
     sni            : str|None                     = None
     kexes          : dict[NamedGroup, bytes]      = field(default_factory=dict)
-    inner_ch       : ClientHelloHandshake|None    = None
     psk_modes      : Iterable[PskKeyExchangeMode] = PskKeyExchangeMode.all()
     hs_trans       : HandshakeTranscript          = field(default_factory=HandshakeTranscript)
     key_calc       : KeyCalc                      = field(init=False)
@@ -630,6 +619,11 @@ class ClientHandshake(AbstractHandshake, PayloadProcessor):
         self.tickets.append(self.key_calc.ticket_info(nst.data, modes=self.psk_modes))
         logger.info("got and stored a reconnect ticket")
 
+    def close_notify_request(self):
+        self.state = ClientStates.CLOSED
+        self.rreader.file.close()
+        self.rwriter.file.close()
+
 @dataclass
 class ClientConnection(Connection):
     handshake: ClientHandshake
@@ -707,3 +701,16 @@ def tls_query(
         conn.send(query)
         response = conn.recv(max_response_size)
     return bytes(response), conn
+
+def build_client(
+        sni: str,
+        ech_config: ECHConfigVariant|None = None,
+        options: ClientOptions = DEFAULT_CLIENT_OPTIONS,
+        rseed: int|None = None,
+    ) -> ClientConnection:
+
+    if ech_config:
+        options = options.replace(send_ech=True, ech_configs=[ech_config])
+
+    ch, sec = build_client_hello(sni, options, rseed)
+    return ClientConnection.create(ch, sec)

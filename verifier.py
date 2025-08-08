@@ -1,30 +1,28 @@
-"""
-Abstract base class for verifier. Must be concretely instantiated by a child class that defines the client/server
-interaction protocol and the predicate to be verified on the response.
-"""
-
-from abc import ABC, abstractmethod
 from enum import IntEnum
-from random import Random
+from time import sleep
 
 from proof_common import VerifierError
 from proof_connections import ProverConnection
-from proof_crypto import VerifierCrypto
-from proof_spec import VerifierMsgType, ProverMsgType, KexSharesPhase1VerifierMsg
-from tls13_spec import CipherSuite, NamedGroup, Handshake, ExtensionType, HandshakeType
+from proof_spec import VerifierMsgType, ProverMsgType, TicketsVerifierMsg, ClientHelloValues, KexSharesProverMsg, \
+    HandshakeSecretsVerifierMsg, MasterSecretsVerifierMsg, CommitmentProverMsg
+from prover_crypto import DEFAULT_PROVER_CLIENT_OPTIONS
+from tls13_spec import Handshake, ExtensionType, HandshakeType, ClientOptions
 from tls_common import *
-from tls_crypto import get_kex_alg
+from tls_server import ServerID
+from verifier_crypto import VerifierCryptoManager
 
 
 class VerifierState(IntEnum):
-    INIT            = 0
-    CONNECTED       = 1
-    WAIT_HASH_1     = 2
-    WAIT_HASH_4     = 3
-    WAIT_2PC_HKDF   = 4
-    WAIT_COMMITMENT = 5
-    WAIT_PROOF      = 6
-    DONE            = 7
+    INIT              = 0
+    GET_TICKETS       = 1
+    CONNECT           = 2
+    WAIT_KEX_SHARES   = 3
+    WAIT_2PC_HS_HKDF  = 4
+    WAIT_2PC_APP_HKDF = 5
+    WAIT_2PC_ENC      = 6
+    WAIT_COMMITMENT   = 7
+    WAIT_PROOF        = 8
+    DONE              = 9
 
     def __str__(self):
         return self.name
@@ -36,150 +34,127 @@ class VerifierState(IntEnum):
             raise StopIteration('no next state')
 
 
-class Verifier(ABC):
-    def __init__(self, server_ids, prover_host, prover_port, ciphersuite=CipherSuite.TLS_AES_128_GCM_SHA256, group=NamedGroup.X25519, rseed=None):
-        self._serverIDs = server_ids
-        self._prover_host = prover_host
-        self._prover_port = prover_port
-        self._ciphersuite = ciphersuite
-        self._group = group
-        self._rgen = Random(rseed)
-        self._num_servers = len(server_ids)
+class Verifier:
+    servers: list[ServerID]
+    prover_conn: ProverConnection
+    crypto_manager: VerifierCryptoManager
+    options: ClientOptions = DEFAULT_PROVER_CLIENT_OPTIONS
+    state: VerifierState = VerifierState.INIT
+    rseed: int|None = None
 
-        self._prover_conn = ProverConnection(self._prover_host, self._prover_port)
-        self._crypto_manager = VerifierCrypto(self._num_servers, ciphersuite, group, self._rgen)
+    def __init__(self,
+                 servers: list[ServerID],
+                 prover_host: str = 'localhost',
+                 prover_port: int = 9000,
+                 options: ClientOptions = DEFAULT_PROVER_CLIENT_OPTIONS,
+                 rseed: int|None = None
+        ) -> None:
+        self.servers = servers
+        self.prover_conn = ProverConnection(prover_host, prover_port)
+        self.crypto_manager = VerifierCryptoManager(servers, options, rseed)
+        self.options = options
+        self.state = VerifierState.INIT
 
-        self._state = VerifierState.INIT
+    def __enter__(self) -> Self:
+        self.prover_conn.create_socket()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.prover_conn.close()
+
+    def increment_state(self) -> None:
+        self.state = self.state.next()
 
     @property
-    def handler(self):
+    def handler(self) -> dict[VerifierState, Callable]:
         return {
-            VerifierState.INIT: self._connect,
-            VerifierState.CONNECTED: self._send_dh_phase_1,
-            VerifierState.WAIT_HASH_1 : self._process_hash_1,
-            VerifierState.WAIT_HASH_4: self._process_hash_4,
-            VerifierState.WAIT_2PC_HKDF: self._2pc_hkdf,
-            VerifierState.WAIT_COMMITMENT: self._process_commitment,
-            VerifierState.WAIT_PROOF: self._verify_proof
+            VerifierState.INIT              : self.preprocess,
+            VerifierState.GET_TICKETS       : self.get_tickets,
+            VerifierState.CONNECT           : self.connect,
+            VerifierState.WAIT_KEX_SHARES   : self.process_kex_shares,
+            VerifierState.WAIT_2PC_HS_HKDF  : self.twopc_handshake_hkdf,
+            VerifierState.WAIT_2PC_APP_HKDF : self.twopc_application_hkdf,
+            VerifierState.WAIT_2PC_ENC      : self.twopc_encryption,
+            VerifierState.WAIT_COMMITMENT   : self.process_commitment,
+            VerifierState.WAIT_PROOF        : self.process_proof
         }
 
-    def _close_all(self):
-        self._prover_conn.close()
-
-    def _increment_state(self):
-        self._state = self._state.next()
-
-    def _connect(self):
-        assert self._state == VerifierState.INIT
-        self._prover_conn.connect()
-        self._increment_state()
-
-    def _send_dh_phase_1(self):
-        assert self._state == VerifierState.CONNECTED
-        self._crypto_manager.gen_secrets()
-        # TODO: remove log
-        logger.info(f'shares: {self._crypto_manager.dh_shares}')
-        msg = KexSharesPhase1VerifierMsg.create(self._crypto_manager.dh_shares)
-        self._prover_conn.send_msg(msg)
-        self._increment_state()
-
-    def _process_hash_1(self):
-        assert self._state == VerifierState.WAIT_HASH_1
-        tx_msg = self._prover_conn.recv_msg()
-        if tx_msg.typ != ProverMsgType.SERVER_HANDSHAKE_TX:
-            raise VerifierError('unexpected message received')
-        self._transcripts = tx_msg.body
-        self._kex_shares = [self._extract_kex_share(msgs[0]) for msgs in self._transcripts]
-
-        self._crypto_manager.exchange_all(self._kex_shares)
-
-        hash_msg = self._prover_conn.recv_msg()
-        if hash_msg.typ != ProverMsgType.HASH_1S:
-            raise VerifierError('unexpected message received')
-        hashes = hash_msg.body
-
-        hs_secrets = self._crypto_manager.compute_handshake_keys(hashes)
-        self._prover_conn.send_msg(VerifierMsgType.HANDSHAKE_KEYS, hs_secrets)
-
-        self._increment_state()
-
-    def _extract_kex_share(self, hello):
-        unpacked_hello = Handshake.unpack(hello.payload)
-        if unpacked_hello.typ != HandshakeType.CLIENT_HELLO:
-            raise ValueError(f'expected a CLIENT_HELLO message, received type {unpacked_hello.typ}')
-
-        extensions = Handshake.unpack(hello.payload).data.extensions
-        kex_extension = extensions[-1]
-        if kex_extension.typ != ExtensionType.KEY_SHARE:
-            raise ValueError(f'expected KEY_SHARE extension as final unencrypted extension, received type {kex_extension.type}')
-
-        key_share_entry = kex_extension.data[0]
-        if key_share_entry.group != self._group:
-            raise ValueError(f'expected first key share to be of group {self._group}, received group {key_share_entry.group}')
-
-        return key_share_entry.pubkey
-
-    def _process_hash_4(self):
-        assert  self._state == VerifierState.WAIT_HASH_4
-
-        msg = self._prover_conn.recv_msg()
-        if msg.typ != ProverMsgType.HASH_4S:
-            raise VerifierError('unexpected message received')
-        hashes = msg.body
-
-        app_secrets = self._crypto_manager.compute_application_keys(hashes)
-        self._prover_conn.send_msg(VerifierMsgType.APPLICATION_KEYS, app_secrets)
-
-        self._increment_state()
-
-    def _2pc_hkdf(self):
-        assert self._state == VerifierState.WAIT_2PC_HKDF
-
-        # TODO: replace this with real 2PC. Right not just sending the whole secrets to the prover
-        master_secrets = self._crypto_manager.get_master_secrets()
-        self._prover_conn.send_msg(VerifierMsgType.MASTER_SECRETS, master_secrets)
-
-        self._prover_conn.send_msg(VerifierMsgType.KEX_SHARE_PHASE_2, self._crypto_manager.resumption_dh_share)
-
-        self._increment_state()
-
-    def _process_commitment(self):
-        assert self._state == VerifierState.WAIT_COMMITMENT
-
-        msg = self._prover_conn.recv_msg()
-        if msg.typ != ProverMsgType.SERVER_HANDSHAKE_TX:
-            raise VerifierError('unexpected message received')
-        transcript = msg.body
-
-        msg = self._prover_conn.recv_msg()
-        if msg.typ != ProverMsgType.COMMITMENT:
-            raise VerifierError('unexpected message received')
-        commitment = msg.body
-
-        # TODO: finish this
-        self._increment_state()
-
-    def _verify_proof(self):
-        assert self._state == VerifierState.WAIT_PROOF
-        self._increment_state()
-
     def run(self):
-        assert self._state == VerifierState.INIT
-        while self._state < VerifierState.DONE:
-            self.handler[self._state]()
-        self._close_all()
+        assert self.state == VerifierState.INIT
+        while self.state < VerifierState.DONE:
+            self.handler[self.state]()
         logger.info('verifier finished')
 
-    @abstractmethod
-    def run_protocol(self):
-        pass
+    def preprocess(self) -> None:
+        assert self.state == VerifierState.INIT
+        # TODO: we'll do MPC preprocessing here later
+        self.increment_state()
 
-    @abstractmethod
-    def verify_proof(self):
-        pass
+    def get_tickets(self) -> None:
+        assert self.state == VerifierState.GET_TICKETS
+        self.crypto_manager.obtain_tickets()
+        logger.info('verifier obtained all tickets')
+        self.increment_state()
 
-class HttpsVerifier(Verifier):
-    def run_protocol(self):
-        pass
-    def verify_proof(self):
-        pass
+    def connect(self) -> None:
+        assert self.state == VerifierState.CONNECT
+        self.prover_conn.connect()
+
+        hostnames = [serv.hostname for serv in self.servers]
+        tickets = self.crypto_manager.redacted_tickets
+        binder_keys = self.crypto_manager.binder_keys
+        kex_shares = self.crypto_manager.kex_shares
+
+        msg = TicketsVerifierMsg.create(list(zip(hostnames, tickets, binder_keys, kex_shares)))
+        self.prover_conn.send_msg(msg)
+
+        self.increment_state()
+
+    def process_kex_shares(self) -> None:
+
+        assert self.state == VerifierState.WAIT_KEX_SHARES
+        msg = self.prover_conn.recv_msg()
+        if not isinstance(msg, KexSharesProverMsg):
+            raise VerifierError(f'received unexpected message type: {msg.typ}')
+
+        shares = [[share.uncreate() for share in shares] for shares in msg.data]
+        self.crypto_manager.key_exchange(shares)
+        self.increment_state()
+
+    def twopc_handshake_hkdf(self) -> None:
+        assert self.state == VerifierState.WAIT_2PC_HS_HKDF
+        # TODO: replace this with actual MPC
+        hs_secrets = self.crypto_manager.handshake_secrets
+        msg = HandshakeSecretsVerifierMsg.create(hs_secrets)
+        self.prover_conn.send_msg(msg)
+
+        sleep(100000) # TODO: remove this
+        self.increment_state()
+
+    def twopc_application_hkdf(self) -> None:
+        assert self.state == VerifierState.WAIT_2PC_APP_HKDF
+        master_secrets = self.crypto_manager.master_secrets
+        msg = MasterSecretsVerifierMsg.create(master_secrets)
+        self.prover_conn.send_msg(msg)
+        self.increment_state()
+
+    def twopc_encryption(self) -> None:
+        assert self.state == VerifierState.WAIT_2PC_ENC
+        self.increment_state()
+
+    def process_commitment(self) -> None:
+        assert self.state == VerifierState.WAIT_COMMITMENT
+        msg = self.prover_conn.recv_msg()
+        if not isinstance(msg, CommitmentProverMsg):
+            raise VerifierError(f'received unexpected message type: {msg.typ}')
+
+        self.crypto_manager.commitment = msg.data.uncreate()
+        self.increment_state()
+
+    def process_proof(self) -> None:
+        assert self.state == VerifierState.WAIT_PROOF
+        # TODO
+        self.increment_state()
+
+
+

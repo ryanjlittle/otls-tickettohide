@@ -3,6 +3,7 @@
 from collections import namedtuple
 from dataclasses import dataclass, field
 from abc import ABC, abstractmethod, abstractproperty
+from queue import ShutDown
 from typing import override, ClassVar, BinaryIO, Self
 import socket
 
@@ -18,7 +19,7 @@ from tls13_spec import (
     RecordEntry,
     Transcript,
     Alert,
-    CipherSuite,
+    CipherSuite, AlertLevel, AlertDescription, ClientStates,
 )
 from tls_crypto import StreamCipher
 from tls_keycalc import KeyCalc, KeyCalcMissing
@@ -33,6 +34,9 @@ CCS_MESSAGE = Record.create(
     version = DEFAULT_LEGACY_VERSION,
     payload = CCS_PAYLOAD,
 )
+
+class CloseNotifyException(Exception):
+    pass
 
 class PayloadProcessor(ABC):
     @abstractmethod
@@ -137,7 +141,7 @@ class RecordTranscript:
 
 @dataclass
 class RecordReader:
-    _file: BinaryIO
+    file: BinaryIO
     _transcript: RecordTranscript
     _app_data_buffer: DataBuffer
     _unwrapper: StreamCipher|None = None
@@ -161,7 +165,7 @@ class RecordReader:
 
     def get_next_record(self) -> Record:
         logger.info('trying to fetch a record from the incoming stream')
-        record_src = LimitReader(self._file)
+        record_src = LimitReader(self.file)
         try:
             record = Record.unpack_from(record_src)
         except (UnpackError, EOFError) as e:
@@ -201,6 +205,8 @@ class RecordReader:
                 self.hs_buffer.add(record.payload)
             case ContentType.ALERT:
                 alert = Alert.unpack(record.payload)
+                if alert.description == AlertDescription.CLOSE_NOTIFY:
+                    raise CloseNotifyException(f'received close notify request, terminating')
                 raise TlsError(f"Received ALERT: {alert}")
             case ContentType.APPLICATION_DATA:
                 self._app_data_buffer.add(record.payload)
@@ -265,6 +271,9 @@ class AbstractHandshake(ABC):
     def can_recv(self) -> bool: ...
     @abstractmethod
     def begin(self, reader: RecordReader, writer: RecordWriter) -> None: ...
+    @abstractmethod
+    def close_notify_request(self) -> None: ...
+
 
 @dataclass
 class Connection:
@@ -288,13 +297,17 @@ class Connection:
         self._rwriter = RecordWriter(outstream, self.transcript)
 
         self.handshake.begin(self._rreader, self._rwriter)
-
-        while not self.handshake.connected:
-            self._rreader.fetch()
+        try:
+            while not self.handshake.connected:
+                self._rreader.fetch()
+        except CloseNotifyException as e:
+            logger.info(f"received close notify message, shutting down")
+            self.handshake.close_notify_request()
+            raise e
 
     def send(self, appdata: bytes) -> int:
         if not self.handshake.can_send:
-            raise ValueError("can't send application data yet")
+            raise ValueError("can't send application data at this stage")
         buf = bytearray(appdata)
         maxp = self._rwriter.max_payload
         while buf:
@@ -311,5 +324,19 @@ class Connection:
         if not self.handshake.can_recv:
             raise ValueError("can't receive application data yet")
         while not self.app_data_in:
-            self._rreader.fetch()
+            try:
+                self._rreader.fetch()
+            except CloseNotifyException as e:
+                logger.info(f"received close notify message, shutting down")
+                self.handshake.close_notify_request()
+                raise e
         return self.app_data_in.get(maxsize)
+
+    def close_notify(self) -> None:
+        abort = Record.create(
+            typ=ContentType.ALERT,
+            version=DEFAULT_LEGACY_VERSION,
+            payload=Alert.create(AlertLevel.FATAL, AlertDescription.CLOSE_NOTIFY).pack()
+        )
+        logger.info("sending close notification")
+        self._rwriter.send(abort)

@@ -5,9 +5,16 @@ from collections.abc import Iterable, Mapping, Callable
 from abc import ABC, abstractmethod, abstractproperty
 from functools import cached_property
 from dataclasses import dataclass, field
+from config import *
 
 import logging
 logger = logging.getLogger('tlsfun')
+logging.basicConfig(format='[%(threadName)s] %(message)s')
+
+if DEBUG:
+    logger.setLevel(logging.DEBUG)
+else:
+    logger.setLevel(logging.WARNING)
 
 class TlsError(RuntimeError):
     pass

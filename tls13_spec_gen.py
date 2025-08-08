@@ -78,6 +78,8 @@ specs: dict[str, GenSpec] = kwdict(
         WAIT_CV       = 6,
         WAIT_FINISHED = 7,
         CONNECTED     = 8,
+        CLOSED        = 9,
+        ERROR         = 10,
     ),
     ContentType = NamedConst(8)(
         INVALID            = 0,

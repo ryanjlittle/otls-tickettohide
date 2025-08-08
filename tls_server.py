@@ -54,7 +54,7 @@ from tls13_spec import (
     EncryptedClientHelloClientExtension,
 
     OuterECHClientHello,
-    InnerECHClientHello,
+    InnerECHClientHello, ECHConfigVariant, ClientStates,
 )
 from tls_records import (
     Connection,
@@ -72,7 +72,7 @@ from tls_keycalc import (
     KeyCalc,
     HandshakeTranscript,
     ServerTicketer,
-    calc_binder_key,
+    calc_binder_val,
 )
 from tls_crypto import (
     gen_cert,
@@ -359,7 +359,7 @@ class _ServerHandshake(AbstractHandshake, PayloadProcessor):
                     psk = self.ticketer.use_ticket(psk_identity, self.key_calc.cipher_suite)
                     if psk is not None:
                         logger.info(f'derived valid PSK {pformat(psk)}')
-                        binder_key = calc_binder_key(self.chello, index, psk, self.key_calc.cipher_suite)
+                        binder_key = calc_binder_val(self.chello, index, psk, self.key_calc.cipher_suite)
                         if binder_key != ext.data.binders.data[index]:
                             raise TlsError(f"binder key mismatch for selected index {index}")
 
@@ -424,22 +424,23 @@ class _ServerHandshake(AbstractHandshake, PayloadProcessor):
         self._send_hs_msg(NewSessionTicketHandshake.create(*ticket.uncreate()))
 
 
+
+    def close_notify_request(self):
+        self.state = ServerStates.CLOSED
+        self.rreader.file.close()
+        self.rwriter.file.close()
+
+
 class Server(Connection):
     """Handles a single TLS 1.3 connection from the server side."""
 
     def __init__(self, server_secrets: ServerSecrets, ticketer: ServerTicketer, rseed:int|None=None) -> None:
         super().__init__(RecordTranscript(is_client=False), _ServerHandshake(server_secrets, ticketer, rseed))
 
-@dataclass
+@dataclass(frozen=True)
 class ServerID:
     hostname: str
     port: int
-    cert_pubkey: bytes
-    ech_pubkeys: list[bytes]
-
-    def to_string(self):
-        return f'{self.hostname}:{self.port}'
-
 
 class _ThreadLogFilter(logging.Filter):
     # inspired by https://stackoverflow.com/a/55035193/1008966

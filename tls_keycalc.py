@@ -2,48 +2,39 @@
 
 Includes code for pre-shared keys (i.e. tickets)."""
 
-import time
-import json
 import os
-from random import Random
-from dataclasses import dataclass, field
-from collections.abc import Iterable
-from functools import cached_property
+import time
+from random import Random, SystemRandom
 
-from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 
-from util import b64enc, b64dec, pformat
 from spec import UnpackError
-from tls_common import *
 from tls13_spec import (
-    Handshake,
     ExtensionTypes,
     HandshakeTypes,
-    PskBinders,
     CipherSuite,
     PskKeyExchangeMode,
     Ticket,
     TicketInfo,
-    ClientExtension,
     PreSharedKeyClientExtension,
     ClientHelloHandshake,
     PskIdentity,
-    PskBinders,
     ServerTicketPlaintext,
     ServerTicketCiphertext,
     ClientExtensionVariant,
     HandshakeVariant,
 )
+from tls_common import *
 from tls_crypto import (
     get_hash_alg,
-    StreamCipher,
     hkdf_extract,
     hkdf_expand_label,
     derive_secret,
     Hasher,
     DEFAULT_KEX_MODES,
 )
+from util import pformat
 
 def current_time_milli() -> int:
     return int(time.time() * 1000)
@@ -90,7 +81,7 @@ class PskExtFactory:
         else:
             raise TlsError(f"ticket {pformat(rt.ticket_id)} not found in given PSK extension; got {[pformat(ident.identity) for ident in psk_ext.data.identities]}")
 
-        return calc_binder_key(chello, index, rt.secret, rt.csuite, ())
+        return calc_binder_val(chello, index, rt.secret, rt.csuite, ())
 
     def add_to_ch(self, chello: ClientHelloHandshake) -> ClientHelloHandshake:
         """Returns a new ClientHello Handshake object with the PSK extension filled in."""
@@ -195,6 +186,9 @@ class KeyCalc:
     ticket_counter: int = 0
     _cipher_suite: CipherSuite|None = None
     _secrets: dict[str, bytes] = field(default_factory=dict)
+    _handshake_secret: bytes|None = None
+    _chts: bytes|None = None
+    _shts: bytes|None = None
 
     @property
     def cipher_suite(self) -> CipherSuite:
@@ -244,13 +238,20 @@ class KeyCalc:
     def early_secret(self) -> bytes:
         return hkdf_extract(self.hash_alg, salt=self.zero, ikm=self.psk)
 
-    @cached_property
+    @property
     def handshake_secret(self) -> bytes:
-        return hkdf_extract(
-            hash_alg = self.hash_alg,
-            salt = self.derived0,
-            ikm = self.kex_secret,
-        )
+        if not self._handshake_secret:
+            self._handshake_secret = hkdf_extract(
+                hash_alg = self.hash_alg,
+                salt = self.derived0,
+                ikm = self.kex_secret,
+            )
+        return self._handshake_secret
+
+    @handshake_secret.setter
+    def handshake_secret(self, value: bytes) -> None:
+        assert self._handshake_secret is None, "handshake_secret already set"
+        self._handshake_secret = value
 
     @cached_property
     def master_secret(self) -> bytes:
@@ -307,13 +308,35 @@ class KeyCalc:
     def derived0(self) -> bytes:
         return self._derive(self.early_secret, b'derived', 0)
 
-    @cached_property
+    @property
     def client_handshake_traffic_secret(self) -> bytes:
-        return self._derive(self.handshake_secret, b'c hs traffic', HandshakeTypes.SERVER_HELLO)
+        if not self._chts:
+            self._chts = self._derive(
+                self.handshake_secret,
+                b'c hs traffic',
+                HandshakeTypes.SERVER_HELLO
+            )
+        return self._chts
 
-    @cached_property
+    @client_handshake_traffic_secret.setter
+    def client_handshake_traffic_secret(self, value: bytes) -> None:
+        assert self._chts is None, "client_handshake_traffic_secret already set"
+        self._chts = value
+
+    @property
     def server_handshake_traffic_secret(self) -> bytes:
-        return self._derive(self.handshake_secret, b's hs traffic', HandshakeTypes.SERVER_HELLO)
+        if not self._shts:
+            self._shts = self._derive(
+                self.handshake_secret,
+                b's hs traffic',
+                HandshakeTypes.SERVER_HELLO
+            )
+        return self._shts
+
+    @server_handshake_traffic_secret.setter
+    def server_handshake_traffic_secret(self, value: bytes) -> None:
+        assert self._shts is None, "server_handshake_traffic_secret already set"
+        self._shts = value
 
     @cached_property
     def derived1(self) -> bytes:
@@ -375,13 +398,21 @@ class ServerTicketer:
     _AEAD = ChaCha20Poly1305
     _NONCE_LENGTH = 12
     _GRACE = 60*10 # grace period (in seconds) for ticket age checks
+    _rgen: Random = SystemRandom()
 
-    def __init__(self) -> None:
-        self._cipher = self._AEAD(self._AEAD.generate_key())
-        logger.info("Generated a random key for symmetric encryption of tickets.")
+    def __init__(self, rgen: Random|None = None) -> None:
         self._used = set[bytes]()
+        self._rgen = SystemRandom() if rgen is None else rgen
+        if DEBUG:
+            self._cipher = self._AEAD(self._rgen.randbytes(32))
+        else:
+            self._cipher = self._AEAD(self._AEAD.generate_key())
+        logger.info("Generated a random key for symmetric encryption of tickets.")
+
 
     def _get_current_time(self, hint: float|None) -> float:
+        if DEBUG:
+            return 0
         return time.time() if hint is None else hint
 
     def gen_ticket(self, secret: bytes, nonce: bytes, lifetime: int, csuite: CipherSuite, current_time: float|None=None) -> Ticket:
@@ -402,7 +433,11 @@ class ServerTicketer:
             psk = secret,
         )
 
-        iv = os.urandom(self._NONCE_LENGTH)
+        if DEBUG:
+            iv = self._rgen.randbytes(self._NONCE_LENGTH)
+        else:
+            iv = os.urandom(self._NONCE_LENGTH)
+
         inner_ctext = self._cipher.encrypt(iv, ptext.pack(), iv)
 
         ctext = ServerTicketCiphertext.create(
@@ -412,7 +447,7 @@ class ServerTicketer:
 
         return Ticket.create(
             ticket_lifetime = lifetime,
-            ticket_age_add = int.from_bytes(os.urandom(4)),
+            ticket_age_add = int.from_bytes(self._rgen.randbytes(4)),
             ticket_nonce = nonce,
             ticket = ctext.pack(),
             extensions = [],
@@ -457,8 +492,8 @@ class ServerTicketer:
         return inner.psk
 
 
-def calc_binder_key(chello: ClientHelloHandshake, index: int, secret: bytes, csuite: CipherSuite, prefix: Iterable[tuple[HandshakeVariant,bool]] = ()) -> bytes:
-    """Computes the binder key at given index within given (unpacked) client hello.
+def calc_binder_val(chello: ClientHelloHandshake, index: int, secret: bytes, csuite: CipherSuite, prefix: Iterable[tuple[HandshakeVariant,bool]] = ()) -> bytes:
+    """Computes the binder value at given index within given (unpacked) client hello.
 
     The actual binder keys must be filled in (and with the proper lengths)
     but will be ignored.
