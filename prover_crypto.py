@@ -7,6 +7,8 @@ from random import Random
 from secrets import SystemRandom
 from typing import Iterable, override
 
+from cryptography.hazmat.primitives.ciphers import Cipher
+
 from proof_common import ProverError
 from proof_spec import ClientHelloValues
 from tls13_spec import Version, \
@@ -16,7 +18,7 @@ from tls13_spec import Version, \
     InnerECHClientHello, Uint64, PreSharedKeyClientExtension, \
     ClientExtensionVariant, ECHConfigVariant, ServerNameClientExtension, ServerHelloHandshake, \
     KeyShareServerExtension, SupportedVersionsServerExtension, PreSharedKeyServerExtension, HandshakeTypes, ContentType, \
-    RecordHeader, ClientStates
+    RecordHeader, ClientStates, EncryptedExtensionsHandshake, FinishedHandshake
 from tls_client import ClientHandshake, build_client_hello, _ChelloExtensions, connect_client
 from tls_common import TlsError, TlsTODO, logger
 from tls_crypto import get_kex_alg, DEFAULT_SIGNATURE_SCHEMES, get_hash_alg, \
@@ -24,7 +26,7 @@ from tls_crypto import get_kex_alg, DEFAULT_SIGNATURE_SCHEMES, get_hash_alg, \
 from tls_ech import OuterPrep, server_accepts_ech
 from tls_keycalc import KeyCalc, HandshakeTranscript, TicketInfo, current_time_milli
 from tls_records import RecordWriter, DEFAULT_LEGACY_VERSION, DEFAULT_LEGACY_COMPRESSION, RecordTranscript, DataBuffer, \
-    RecordReader, InnerPlaintext
+    RecordReader, InnerPlaintext, CCS_MESSAGE
 from tls_server import ServerID
 
 DEFAULT_PROVER_CLIENT_OPTIONS = ClientOptions.create(
@@ -49,16 +51,13 @@ class ProverSecrets:
 @dataclass
 class ProverHandshake(ClientHandshake):
     inner_ch: ClientHelloHandshake = field()
-    psk : bytes|None = field(init=False)
     kexes: dict[NamedGroup, bytes] = field(init=False)
     server_kex_shares: list[tuple[NamedGroup, bytes]] = field(default_factory=list)
-    rreader: RecordReader|None = None
-    rwriter: RecordWriter|None = None
-    # transcript: RecordTranscript = field(default_factory=lambda: RecordTranscript(is_client=True))
 
     @override
     def __post_init__(self) -> None:
         super().__post_init__()
+        self.key_calc.use_psk = True
 
         got_psk_kex_mode: bool = False
         got_psk: bool = False
@@ -130,9 +129,34 @@ class ProverHandshake(ClientHandshake):
             raise TlsError(f"cipher suite {csuite} not supported") from e
         self.key_calc.cipher_suite = csuite
 
-
+        self.state = ClientStates.WAIT_EE
         logger.info(f"finished processing server hello.")
-        self._state = ClientState.WAIT_EE
+
+    @override
+    def _process_ee(self, ee: EncryptedExtensionsHandshake) -> None:
+        # kludgey way to force the handshake to follow a PSK resumption, without storing the PSK itself
+        super()._process_ee(ee)
+        self.state = ClientStates.WAIT_FINISHED
+
+    @override
+    def _process_finished(self, sf: FinishedHandshake) -> None:
+        # Same code as in ClientHandshake, but without re-keying to the application keys
+        if sf.data != self.key_calc.server_finished_verify:
+            raise TlsError("verify data in server finished message doesn't match")
+        logger.info(f"Received correct SERVER FINISHED.")
+
+        logger.info(f"Sending change cipher spec to server")
+        assert self.rwriter is not None
+        self.rwriter.send(CCS_MESSAGE)
+
+        self.rwriter.rekey(self.key_calc.cipher_suite,
+                           self.key_calc.client_handshake_traffic_secret)
+
+        client_finished = FinishedHandshake.create(self.key_calc.client_finished_verify)
+        self._send_hs_msg(client_finished)
+        logger.info(f"Sent CLIENT FINISHED. Handshake complete!")
+
+        self.state = ClientStates.CONNECTED
 
     def recv_message(self) -> None:
         if self.rreader is None:
@@ -249,8 +273,6 @@ class ProverClient:
             self.handshake.key_calc.cipher_suite,
             self.handshake.key_calc.server_handshake_traffic_secret
         )
-        #TODO: this is a manual fix for a bug, need to fix this better
-        self.handshake.state = ClientStates.WAIT_EE
 
         while not self.handshake.connected:
             self.handshake.recv_message()
@@ -469,13 +491,6 @@ def build_prover_client_hello(
 
     # fix ECH extension
     chello = ech_prep.fill_outer(chello)
-
-    # TODO: testing remove this
-    with open('prover_outer', 'wb') as f:
-        f.write(chello.pack())
-    with open('prover_inner', 'wb') as f:
-        f.write(ech_prep.inner_ch.pack())
-
     return chello, ech_prep.inner_ch
 
 def _build_prover_inner_ch(

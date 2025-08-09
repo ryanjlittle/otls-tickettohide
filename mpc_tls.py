@@ -89,8 +89,8 @@ class MasterSecretTrustedParty(TrustedParty):
             self.rgen = SystemRandom()
 
         # secret share the keys
-        v_ckey_share = self.rgen.getrandbits(cipher.key_length).to_bytes(cipher.key_length//8, 'little')
-        v_skey_share = self.rgen.getrandbits(cipher.key_length).to_bytes(cipher.key_length//8, 'little')
+        v_ckey_share = self.rgen.randbytes(cipher.key_length)
+        v_skey_share = self.rgen.randbytes(cipher.key_length)
         p_ckey_share = bytes(a ^ b for a, b in zip(ckey, v_ckey_share))
         p_skey_share = bytes(a ^ b for a, b in zip(ckey, v_ckey_share))
 

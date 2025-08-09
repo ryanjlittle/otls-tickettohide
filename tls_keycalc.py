@@ -189,6 +189,7 @@ class KeyCalc:
     _handshake_secret: bytes|None = None
     _chts: bytes|None = None
     _shts: bytes|None = None
+    _use_psk: bool = field(default=False)
 
     @property
     def cipher_suite(self) -> CipherSuite:
@@ -213,11 +214,20 @@ class KeyCalc:
         self._secrets[name] = value
 
     @property
+    def use_psk(self) -> bool:
+        return self._use_psk
+
+    @use_psk.setter
+    def use_psk(self, value: bool) -> None:
+        self._use_psk = value
+
+    @property
     def psk(self) -> bytes:
         return self._get_secret('psk')
 
     def set_psk(self, value: bytes|None) -> None:
         self._set_secret('psk', self.zero if value is None else value)
+        self.use_psk = (value is not None)
 
     @property
     def kex_secret(self) -> bytes:
@@ -274,7 +284,7 @@ class KeyCalc:
     @cached_property
     def server_finished_verify(self) -> bytes:
         base_key = self.server_handshake_traffic_secret
-        if self.psk is self.zero:
+        if not self.use_psk:
             thash = self.hs_trans[
                 HandshakeTypes.CERTIFICATE_VERIFY, False]
         else:
