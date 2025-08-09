@@ -1,6 +1,6 @@
 from enum import IntEnum
 
-from mpc_tls import HandshakeSecretTrustedParty, MasterSecretTrustedParty
+from mpc_tls import HandshakeSecretTrustedParty, MasterSecretTrustedParty, EncryptionTrustedParty
 from proof_common import *
 from proof_connections import VerifierConnection
 from proof_spec import TicketsVerifierMsg, KexSharesProverMsg, HandshakeSecretsVerifierMsg, MasterSecretsVerifierMsg
@@ -38,6 +38,8 @@ class Prover:
     crypto_manager: ProverCryptoManager
     state: ProverState = ProverState.INIT
     rseed: int|None = None
+    verifier_client_key_share: bytes # TODO: this is for testing only
+    verifier_server_key_share: bytes # TODO: this is for testing only
 
     def __init__(self,
                  servers: list[ServerID],
@@ -136,13 +138,16 @@ class Prover:
 
         self.crypto_manager.set_dummy_handshake_secets(handshake_secs)
         self.crypto_manager.set_chts_shts(chts, shts)
+        logger.info('computed handshake keys')
 
         self.crypto_manager.finish_handshakes()
+        logger.info('handshake secrets verified')
 
         self.increment_state()
 
     def twopc_application_hkdf(self) -> None:
         assert self.state == ProverState.WAIT_2PC_APP_HKDF
+
         # TODO: replace with actual MPC
         msg = self.verifier_connection.recv_msg()
         if not isinstance(msg, MasterSecretsVerifierMsg):
@@ -153,6 +158,15 @@ class Prover:
         trusted_party.verifier_input = list(msg.data.uncreate())
         trusted_party.compute()
         secrets, ck_share, civ, sk_share, siv = trusted_party.prover_output
+        self.crypto_manager.client_key_share = ck_share
+        self.crypto_manager.server_key_share = sk_share
+        self.crypto_manager.client_key_iv = civ
+        self.crypto_manager.server_key_iv = siv
+
+        # TODO: testing only, remove these
+        vck_share, civ1, vsk_share, siv1, commit1, commit2 = trusted_party.verifier_output
+        self.verifier_client_key_share = vck_share
+        self.verifier_server_key_share = vsk_share
 
         # check received master secrets against locally computed values
         computed_secrets = self.crypto_manager.dummy_master_secrets
@@ -163,11 +177,21 @@ class Prover:
                 raise ProverError('received master secret mismatch')
 
         logger.info('dummy master secrets verified')
-
         self.increment_state()
 
     def twopc_encryption(self) -> None:
         assert self.state == ProverState.WAIT_2PC_ENC
+
+        # TODO: replace with actual MPC
+        trusted_party = EncryptionTrustedParty()
+        plaintext = self.secrets.queries[self.secrets.index]
+        trusted_party.prover_input = (self.crypto_manager.client_key_share, plaintext)
+        trusted_party.verifier_input = self.verifier_client_key_share
+        trusted_party.public_input = (self.crypto_manager.client_key_iv, self.crypto_manager.query_header)
+        trusted_party.compute()
+
+        # TODO: send all queries
+
         self.increment_state()
 
     def process_response(self) -> None:

@@ -10,15 +10,29 @@ from https_client import http_get_req
 from https_server import HttpHandler
 from prover import Prover
 from prover_crypto import ProverSecrets
-from tls13_spec import ServerSecrets, ClientHelloHandshake
-from tls_client import build_client, DEFAULT_CLIENT_OPTIONS
+from tls13_spec import ServerSecrets, ClientHelloHandshake, ClientOptions, NamedGroup, CipherSuite
+from tls_client import build_client
 from tls_common import *
-from tls_crypto import gen_server_secrets
+from tls_crypto import gen_server_secrets, DEFAULT_SIGNATURE_SCHEMES, DEFAULT_KEX_MODES
 from tls_keycalc import ServerTicketer
 from tls_records import CloseNotifyException
 from tls_server import ServerID, Server, _ServerThread
 from verifier import Verifier
 
+
+CLIENT_OPTIONS = ClientOptions.create(
+send_sni = True,
+    ciphers = [CipherSuite.TLS_AES_128_GCM_SHA256],
+    kex_shares = [NamedGroup.X25519],
+    kex_groups = [NamedGroup.X25519],
+    sig_algs = DEFAULT_SIGNATURE_SCHEMES,
+    send_psk = False,
+    tickets = (),
+    psk_modes = DEFAULT_KEX_MODES,
+    send_time = None,
+    send_ech = True,
+    ech_configs = (),
+)
 
 class ProofTest:
     def __init__(self, num_servers, hostname='localhost', min_port=8000, rseed=None):
@@ -43,7 +57,7 @@ class ProofTest:
             thread.join()
 
     def run_on_real_server(self):
-        self.server_ids = [ServerID(hostname='test.defo.ie', port=443), ServerID(hostname='test.defo.ie', port=443)]
+        self.server_ids = [ServerID(hostname='test.defo.ie', port=443)]
         self.start_prover()
         self.start_verifier()
 
@@ -201,7 +215,7 @@ def test_ech_with_ticket():
     # thread = threading.Thread(target=server.serve)
     # thread.start()
 
-    options = DEFAULT_CLIENT_OPTIONS
+    options = CLIENT_OPTIONS
     client0 = build_client(sni=hostname, options=options)
     request = http_get_req(hostname, '/')
     with socket.create_connection((hostname, port)) as csock:
@@ -213,7 +227,7 @@ def test_ech_with_ticket():
     print(f'got tickets and ech configs: {response}')
 
     # Ticket, no ECH
-    options = DEFAULT_CLIENT_OPTIONS.replace(send_ech=False, send_psk=True, tickets=[client0.tickets[0].uncreate()])
+    options = CLIENT_OPTIONS.replace(send_ech=False, send_psk=True, tickets=[client0.tickets[0].uncreate()])
     client = build_client(sni=hostname, options=options)
     with socket.create_connection((hostname, port)) as csock:
         client.connect_socket(csock)
@@ -222,24 +236,24 @@ def test_ech_with_ticket():
     print(f'success with ticket and no ECH: {response}')
 
     # ECH, no ticket
-    # options = DEFAULT_CLIENT_OPTIONS.replace(ech_configs=client0.ech_configs[:1])
-    # #client = build_client(sni=hostname, ech_config=client0.ech_configs[0]) # works
-    # client = build_client(sni=hostname, options=options) # doesnt work
-    #
-    # with socket.create_connection((hostname, port)) as csock:
-    #     client.connect_socket(csock)
-    #     client.send(request)
-    #     response = client.recv(2 ** 16)
-    # print(f'success with ECH and no ticket: {response}')
+    options = CLIENT_OPTIONS.replace(ech_configs=client0.ech_configs[:1])
+    #client = build_client(sni=hostname, ech_config=client0.ech_configs[0]) # works
+    client = build_client(sni=hostname, options=options) # doesnt work
+
+    with socket.create_connection((hostname, port)) as csock:
+        client.connect_socket(csock)
+        client.send(request)
+        response = client.recv(2 ** 16)
+    print(f'success with ECH and no ticket: {response}')
 
     # ECH and ticket
-    # options = DEFAULT_CLIENT_OPTIONS.replace(ech_configs=client0.ech_configs[:1], send_psk=True, tickets=[client0.tickets[1].uncreate()])
-    # client = build_client(sni=hostname, options=options)
-    # with socket.create_connection((hostname, port)) as csock:
-    #     client.connect_socket(csock)
-    #     client.send(request)
-    #     response = client.recv(2 ** 16)
-    # print(f'success with ECH and ticket: {response}')
+    options = CLIENT_OPTIONS.replace(ech_configs=client0.ech_configs[:1], send_psk=True, tickets=[client0.tickets[1].uncreate()])
+    client = build_client(sni=hostname, options=options)
+    with socket.create_connection((hostname, port)) as csock:
+        client.connect_socket(csock)
+        client.send(request)
+        response = client.recv(2 ** 16)
+    print(f'success with ECH and ticket: {response}')
 
 
 
@@ -304,7 +318,7 @@ class TestServer:
 
 
 if __name__ == '__main__':
-    num_servers = 2
+    num_servers = 1
     rseed = 0
 
     # test_ech_with_ticket()

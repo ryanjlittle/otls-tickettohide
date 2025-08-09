@@ -2,6 +2,7 @@
 import socket
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from functools import cached_property
 from random import Random
 from secrets import SystemRandom
 from typing import Iterable, override
@@ -14,7 +15,8 @@ from tls13_spec import Version, \
     PskKeyExchangeModesClientExtension, GenericClientExtension, ExtensionTypes, EncryptedClientHelloClientExtension, \
     InnerECHClientHello, Uint64, PreSharedKeyClientExtension, \
     ClientExtensionVariant, ECHConfigVariant, ServerNameClientExtension, ServerHelloHandshake, \
-    KeyShareServerExtension, SupportedVersionsServerExtension, PreSharedKeyServerExtension, HandshakeTypes
+    KeyShareServerExtension, SupportedVersionsServerExtension, PreSharedKeyServerExtension, HandshakeTypes, ContentType, \
+    RecordHeader, ClientStates
 from tls_client import ClientHandshake, build_client_hello, _ChelloExtensions, connect_client
 from tls_common import TlsError, TlsTODO, logger
 from tls_crypto import get_kex_alg, DEFAULT_SIGNATURE_SCHEMES, get_hash_alg, \
@@ -22,7 +24,7 @@ from tls_crypto import get_kex_alg, DEFAULT_SIGNATURE_SCHEMES, get_hash_alg, \
 from tls_ech import OuterPrep, server_accepts_ech
 from tls_keycalc import KeyCalc, HandshakeTranscript, TicketInfo, current_time_milli
 from tls_records import RecordWriter, DEFAULT_LEGACY_VERSION, DEFAULT_LEGACY_COMPRESSION, RecordTranscript, DataBuffer, \
-    RecordReader
+    RecordReader, InnerPlaintext
 from tls_server import ServerID
 
 DEFAULT_PROVER_CLIENT_OPTIONS = ClientOptions.create(
@@ -137,210 +139,6 @@ class ProverHandshake(ClientHandshake):
             raise AttributeError('not connected')
         self.rreader.fetch()
 
-
-# class ProverHandshake(ClientHandshake):
-#     """Modified TLS client for the prover"""
-#
-#     _received_hs_secrets = False
-#     _received_app_secrets = False
-#     #
-#     # def __init__(self):
-#     #     # if secrets is None:
-#     #     #     secrets = ClientSecrets()
-#     #     # super().__init__(client_hello, secrets)
-#     #     self._received_hs_secrets = False
-#     #     self._received_app_secrets = False
-#
-#
-#     def set_handshake_secrets(self, chts, shts):
-#         if self._received_hs_secrets:
-#             raise ProverError('handshake secrets already set')
-#         self._received_hs_secrets = True
-#         self._shts = shts
-#         self._chts = chts
-#         self._rreader.rekey(self._cipher, self._hash_alg, shts)
-#         self._key_calc.server_handshake_traffic_secret = shts
-#         self._key_calc.client_handshake_traffic_secret = chts
-#         self._rreader.process_buffered_records()
-#
-#     def set_application_secrets(self, cats, sats):
-#         if self._received_app_secrets:
-#             raise ProverError('application secrets already set')
-#         self._sats = sats
-#         self._cats = cats
-#         self._rreader.rekey(self._cipher, self._hash_alg, sats)
-#         self._rwriter.rekey(self._cipher, self._hash_alg, cats)
-#         self._key_calc.server_application_traffic_secret = sats
-#         self._key_calc.client_application_traffic_secret = cats
-#         self._received_app_secrets = True
-#
-#     def set_resumption_secrets(self, binder_key, ticket):
-#         self._key_calc.binder_key = binder_key
-#         self.tickets = [ticket]
-#
-#     @override
-#     def _process_server_hello(self, sh: ServerHelloHandshake):
-#         if sh.data.server_random.hex() == 'cf21ad74e59a6111be1d8c021e65b891c2a211167abb8c5e079e09e2c8a8339c':
-#             # it's the sha256 hash of 'HelloRetryRequest'
-#             raise TlsTODO("HelloRetryRequest not yet implemented")
-#
-#         if server_accepts_ech(self.inner_ch, sh):
-#             logger.info("ECH accepted and confirmed by server")
-#         else:
-#             raise TlsError("server rejected true ECH")
-#
-#         csuite = sh.data.cipher_suite
-#
-#         got_psk = False
-#         got_kex_share = False
-#
-#         for ext in sh.data.extensions.uncreate():
-#             match ext:
-#                 case KeyShareServerExtension():
-#                     self.kex_group = ext.data.group
-#                     try:
-#                         kex = get_kex_alg(self.kex_group)
-#                     except ValueError:
-#                         raise TlsError(f"no implementation for kex group {self.kex_group}")
-#                     kex_secret = kex.exchange(private, ext.data.pubkey)
-#                 case SupportedVersionsServerExtension():
-#                     assert ext.data.uncreate() == Version.TLS_1_3.value
-#                 case PreSharedKeyServerExtension():
-#                     if ext.data != 0:
-#                         raise TlsError(f'unexpected index in PRE_SHARED_KEY: {ext.data}')
-#                     got_psk = True
-#                 case _:
-#                     logger.warning("Ignoring server extension", ext.typ)
-#
-#         match (got_kex_share, (self._psk is not None), got_psk):
-#             case (True, True, True):
-#                 if PskKeyExchangeMode.PSK_DHE_KE not in self._psk_modes:
-#                     raise TlsError("server wants PSK_DHE_KE but client didn't ask for it")
-#             case (False, True, True):
-#                 if PskKeyExchangeMode.PSK_KE not in self._psk_modes:
-#                     raise TlsError("server wants PSK_KE but client didn't ask for it")
-#             case (True, False, False):
-#                 pass
-#             case other:
-#                 raise TlsError(f"unclear what PSK/DHE mode to use:; check triple is {other}")
-#
-#         # inform components of the cipher suite implementation
-#         try:
-#             self._hash_alg = get_hash_alg(self._cipher_suite)
-#             self._cipher = get_cipher_alg(self._cipher_suite)
-#         except ValueError as e:
-#             raise TlsError(f"cipher suite {self._cipher_suite} not supported") from e
-#         self._key_calc.cipher_suite = self._cipher_suite
-#         self._key_calc.psk = self._psk
-#
-#         logger.info(f"Finished processing server hello.")
-#         self._state = ClientState.WAIT_EE
-#
-#
-#     def _process_finished(self, body):
-#         if not self._received_hs_secrets:
-#             raise ProverError('need to get handshake secrets from verifier to process encrypted handshake messages')
-#         if body != self._key_calc.server_finished_verify:
-#             raise TlsError("verify data in server finished message doesn't match")
-#         logger.info(f"Received correct SERVER FINISHED.")
-#
-#         logger.info(f"Sending change cipher spec to server")
-#         self._rwriter.send(
-#             typ     = ContentType.CHANGE_CIPHER_SPEC,
-#             payload = b'\x01',
-#         )
-#
-#         self._rwriter.rekey(self._cipher, self._hash_alg, self._chts)
-#
-#
-#
-#     def send_finished(self):
-#         if not self._received_hs_secrets:
-#             raise ProverError('need to get handshake secrets from verifier to process encrypted handshake messages')
-#         client_finished = Handshake.pack(
-#             typ  = HandshakeType.FINISHED,
-#             body = self._key_calc.client_finished_verify,
-#         )
-#         self._send_hs_msg(typ=HandshakeType.FINISHED, raw=client_finished)
-#         self._state = ClientState.CONNECTED
-
-
-#
-# class PartialHandshakeTranscript(HandshakeTranscript):
-#     """Helper class to compute key derivation while only learning partial transcript hashes, not the full transcript"""
-#     def set_hash(self, typ, hash_val, from_client=None):
-#         match (typ, from_client):
-#             case (HandshakeType.SERVER_HELLO, None):
-#                 self._lookup[typ, False] = hash_val
-#             case (HandshakeType.FINISHED, (True | False)):
-#                 self._lookup[typ, from_client] = hash_val
-#             case (HandshakeType.FINISHED, _):
-#                 raise ValueError('need to specify client finished or server finished')
-#             case _:
-#                 raise ValueError('adding unexpected hash value')
-#         self._history.append(hash_val)
-#
-#     def add(self, typ, from_client, data):
-#         """stub: this method isn't needed"""
-#         pass
-#
-# class PartialTicketInfo(TicketInfo):
-#     """For computing binder values using only the ticket nonce and binder key (without the resumption master secret)"""
-#     def __init__(self, ticket_id, binder_key, csuite, modes, mask, lifetime, creation=None):
-#         self._id = ticket_id
-#         self._binder_key = binder_key
-#         self._csuite = csuite
-#         self._modes = tuple(modes)
-#         self._mask = mask
-#         self._lifetime = lifetime
-#         self._creation = time.time() if creation is None else creation
-#
-#     def to_dict(self):
-#         """stub: method not needed"""
-#         return {
-#             'ticket_id': b64enc(self._id),
-#             'binder_key': b64enc(self._binder_key),
-#             'csuite': int(self._csuite),
-#             'modes': [int(mode) for mode in self._modes],
-#             'mask': self._mask,
-#             'lifetime': self._lifetime,
-#             'creation': self._creation,
-#         }
-#
-#     @classmethod
-#     def from_dict(cls, d):
-#         return cls(
-#             ticket_id = b64dec(d['ticket_id']),
-#             binder_key = b64dec(d['binder_key']),
-#             csuite = CipherSuite(d['csuite']),
-#             modes = tuple(PskKeyExchangeMode(code) for code in d['modes']),
-#             mask = d['mask'],
-#             lifetime = d['lifetime'],
-#             creation = d['creation'],
-#         )
-#
-#     @property
-#     def binder_key(self):
-#         return self._binder_key
-#
-#     def get_binder_val(self, chello, prefix=b''):
-#         """Computes the binder key for this ticket within the given (unpacked) client hello.
-#
-#                 prefix is (optionally) a transcript prefix, e.g. from a hello retry.
-#                 """
-#
-#         # find the index
-#         try:
-#             psk_ext = next(filter(
-#                 (lambda ext: ext.typ == ExtensionType.PRE_SHARED_KEY),
-#                 chello.body.extensions))
-#             index = next(i for i, ident in enumerate(psk_ext.data.identities)
-#                          if ident.identity == self._id)
-#         except StopIteration:
-#             raise TlsError("this ticket id not found in given client hello") from None
-#
-#         return calc_binder_val(chello, index, self._csuite, binder_key=self.binder_key, prefix=prefix)
-
 class ProverClient:
     """Manages connection to a single TLS server from the prover."""
 
@@ -441,12 +239,19 @@ class ProverClient:
         return self.handshake.key_calc.hs_trans[HandshakeTypes.FINISHED]
 
     def finish_handshake(self) -> None:
-        if self.handshake.rreader is None:
+        if self.handshake.rreader is None or self.handshake.rwriter is None:
             raise AttributeError('handshake not started')
         self.handshake.rreader.rekey(
             self.handshake.key_calc.cipher_suite,
             self.handshake.key_calc.server_handshake_traffic_secret
         )
+        self.handshake.rwriter.rekey(
+            self.handshake.key_calc.cipher_suite,
+            self.handshake.key_calc.server_handshake_traffic_secret
+        )
+        #TODO: this is a manual fix for a bug, need to fix this better
+        self.handshake.state = ClientStates.WAIT_EE
+
         while not self.handshake.connected:
             self.handshake.recv_message()
 
@@ -467,6 +272,11 @@ class ProverCryptoManager:
     servers: list[ServerID]
     secrets: ProverSecrets
     clients: list[ProverClient] = []
+    client_key_share: bytes
+    client_key_iv: bytes
+    server_key_share: bytes
+    server_key_iv: bytes
+    ciphersuite: CipherSuite = CipherSuite.TLS_AES_128_GCM_SHA256
     rseed: int|None = None
 
     def __init__(
@@ -540,6 +350,20 @@ class ProverCryptoManager:
     @property
     def real_server_application_hash(self) -> bytes:
         return self.twopc_client.application_transcript_hash
+
+    @cached_property
+    def query_header(self) -> bytes:
+        raw_secret = self.secrets.queries[self.secrets.index]
+        ptext = InnerPlaintext.create(
+            payload = raw_secret,
+            typ = ContentType.APPLICATION_DATA,
+            padding = 0
+        ).pack()
+        return RecordHeader.create(
+            typ = ContentType.APPLICATION_DATA,
+            version = DEFAULT_LEGACY_VERSION,
+            size = get_cipher_alg(self.ciphersuite).ctext_size(len(ptext))
+        ).pack()
 
     def set_dummy_handshake_secets(self, secrets: list[bytes]) -> None:
         for i, (client, secret) in enumerate(zip(self.clients, secrets)):
@@ -759,6 +583,3 @@ def compute_binder_val(chello: ClientHelloHandshake, binder_key: bytes, csuite: 
         raise TlsError("binder key in client hello has the wrong length")
 
     return binder_val
-
-
-

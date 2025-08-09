@@ -127,8 +127,6 @@ class Verifier:
         hs_secrets = self.crypto_manager.handshake_secrets
         msg = HandshakeSecretsVerifierMsg.create(hs_secrets)
         self.prover_conn.send_msg(msg)
-
-        sleep(100000) # TODO: remove this
         self.increment_state()
 
     def twopc_application_hkdf(self) -> None:
@@ -144,11 +142,11 @@ class Verifier:
 
     def process_commitment(self) -> None:
         assert self.state == VerifierState.WAIT_COMMITMENT
-        msg = self.prover_conn.recv_msg()
-        if not isinstance(msg, CommitmentProverMsg):
-            raise VerifierError(f'received unexpected message type: {msg.typ}')
-
-        self.crypto_manager.commitment = msg.data.uncreate()
+        # msg = self.prover_conn.recv_msg()
+        # if not isinstance(msg, CommitmentProverMsg):
+        #     raise VerifierError(f'received unexpected message type: {msg.typ}')
+        #
+        # self.crypto_manager.commitment = msg.data.uncreate()
         self.increment_state()
 
     def process_proof(self) -> None:
