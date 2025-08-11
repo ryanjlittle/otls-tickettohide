@@ -153,21 +153,25 @@ class _HashAlgNotSet:
 @dataclass
 class _RunningHash:
     hash_alg: Hasher
-    running: HashObject
-    history: list[bytes] = field(default_factory=list)
+    running: HashObject = field(init=False)
+    history: list[bytes] = field(init=False)
     lookup: dict[tuple[HandshakeTypes, bool], bytes] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.running = self.hash_alg.hasher()
+        self.history = [self.running.digest()]
 
     @classmethod
     def start(cls, ha: Hasher, initial: _HashAlgNotSet) -> Self:
-        rh = cls(hash_alg = ha, running = ha.hasher())
+        rh = cls(hash_alg = ha)
         for hs, from_client in initial.backlog:
             rh.add(hs, from_client)
         return rh
 
     def clear(self) -> None:
         self.running = self.hash_alg.hasher()
-        self.history = []
-        self.lookup = {}
+        del self.history[1:]
+        self.lookup.clear()
 
     def add_partial(self, data: bytes) -> bytes:
         self.running.update(data)
