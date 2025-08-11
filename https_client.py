@@ -35,8 +35,8 @@ if __name__ == '__main__':
         help='If a PSK reconnect ticket is received, save it to the given filename.')
     parser.add_argument('-u', '--use-ticket', type=argparse.FileType('r'), metavar='FILENAME',
         help='Attempt to use the ticket in the given filename to connect in PSK mode.')
-    parser.add_argument('--store-ech', type=argparse.FileType('w'), metavar='FILENAME')
-    parser.add_argument('--use-ech', type=argparse.FileType('r'), metavar='FILENAME')
+    parser.add_argument('-r', '--remember-ech', type=argparse.FileType('w'), metavar='FILENAME')
+    parser.add_argument('-e', '--use-ech', type=argparse.FileType('r'), metavar='FILENAME')
     parser.add_argument('-q', '--quiet', action='store_true')
     args = parser.parse_args()
 
@@ -71,9 +71,9 @@ if __name__ == '__main__':
             logger.info(f'got {len(conn.tickets)} tickets and saved one')
         else:
             logger.warning('did not receive any reconnect ticket to save')
-    if args.store_ech:
+    if args.remember_ech:
         if conn.ech_configs:
-            json.dump(conn.ech_configs[0].jsonify(), args.store_ech)
+            json.dump(conn.ech_configs[0].jsonify(), args.remember_ech)
             logger.info(f'got {len(conn.ech_configs)} ech configs and saved one')
         else:
             logger.warning('did not receive any ECH config to save')
