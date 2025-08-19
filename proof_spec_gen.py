@@ -1,8 +1,8 @@
 from textwrap import dedent
 
 from spec import Raw, String
-from spec_gen import GenSpec, NamedConst, Select, Sequence, Struct, Bounded, FixRaw, Names, FORCE_RANK, SourceGen, Maybe
-from tls13_spec import Record, ClientHelloHandshake, TicketInfo, NamedGroup, KeyShareEntry
+from spec_gen import GenSpec, NamedConst, Select, Sequence, Struct, Bounded, Names, FORCE_RANK, SourceGen
+from tls13_spec import TicketInfo, NamedGroup, KeyShareEntry
 from util import kwdict
 
 specs: dict[str, GenSpec] = kwdict(
@@ -14,9 +14,9 @@ specs: dict[str, GenSpec] = kwdict(
     ),
 
     ProverMsgType = NamedConst(8)(
-        KEX_SHARES = 1,
-        COMMITMENT = 2,
-        PROOF      = 3,
+        KEX_SHARES  = 1,
+        COMMITMENTS = 2,
+        PROOF       = 3,
         KEY_SHARE_TEST1 = 4,
         KEY_SHARE_TEST2 = 5,
     ),
@@ -30,11 +30,20 @@ specs: dict[str, GenSpec] = kwdict(
 
     ProverMsg = Select('ProverMsgType', 16)(
         KEX_SHARES =
-            Sequence(Bounded(16, Sequence(Struct(group=NamedGroup, pubkey=Bounded(16, Raw))))),
-        COMMITMENT = Struct(commitment = Bounded(16, Raw)),
+            Sequence(Bounded(16, Sequence(Struct(
+                group=NamedGroup,
+                pubkey=Bounded(16, Raw)
+            )))),
+        COMMITMENTS = Struct(
+            query_commitment = Bounded(8, Raw),
+            response_commitments = Bounded(16,Sequence(Bounded(8, Raw)))
+        ),
         PROOF = Struct(proof = Bounded(16, Raw)),
         KEY_SHARE_TEST1 = Struct(share = KeyShareEntry),
-        KEY_SHARE_TEST2 = Struct(group = NamedGroup, pubkey = Bounded(16, Raw)),
+        KEY_SHARE_TEST2 = Struct(
+            group = NamedGroup,
+            pubkey = Bounded(16, Raw)
+        ),
     ),
 
     VerifierMsg = Select('VerifierMsgType', 16)(

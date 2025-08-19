@@ -17,8 +17,8 @@ class VerifierTls:
     server: ServerID
     options: ClientOptions
     key_calc: KeyCalc
-    kex_secrets: dict[NamedGroup, bytes] = {}
-    kex_shares: list[KeyShareEntry] = []
+    kex_secrets: dict[NamedGroup, bytes]
+    kex_shares: list[KeyShareEntry]
     ticket_info: TicketInfo | None = None
     rseed: int|None = None
 
@@ -34,11 +34,13 @@ class VerifierTls:
 
         self.key_calc = KeyCalc(HandshakeTranscript())
         self.key_calc.cipher_suite = options.ciphers[0]
+        self.kex_shares = []
+        self.kex_secrets = {}
 
         for group in options.kex_shares:
             kex_alg = get_kex_alg(group)
             if self.rseed is None:
-                rgen = SystemRandom()
+                rgen: Random = SystemRandom()
             else:
                 rgen = Random(self.rseed)
                 self.rseed += 1
@@ -51,7 +53,7 @@ class VerifierTls:
     def obtain_ticket(self) -> None:
         options = DEFAULT_PROVER_CLIENT_OPTIONS.replace(send_psk=False, send_ech=False)
         with connect_client(self.server.hostname, self.server.port, options=options, rseed=self.rseed) as client:
-            # the contents of this message don't matter, but we need the server to respond with some application data
+            # the content of this message doesn't matter, but we need the server to respond with some application data
             # or else they may not send tickets. A basic HTTP get request will get a response from HTTPS servers.
             req = http_get_req(self.server.hostname, '/')
             client.send(req)
@@ -97,7 +99,8 @@ class VerifierTls:
 class VerifierCryptoManager:
     """Manages the TLS crypto operations done by the verifier"""
     tls_controllers: list[VerifierTls]
-    commitment: bytes|None = None
+    query_commitment: bytes|None = None
+    response_commitments: list[bytes]|None = None
 
     def __init__(
             self,
@@ -141,52 +144,3 @@ class VerifierCryptoManager:
     @property
     def master_secrets(self) -> list[bytes]:
         return [conn.master_secret for conn in self.tls_controllers]
-
-
-
-    # def gen_secrets(self):
-    #     if len(self._dh_secrets) > 0 or self._resumption_dh_secret is not None:
-    #         raise VerifierError('already generated secrets')
-    #     self._dh_secrets = [self._kex.gen_private(self._rgen) for _ in range(self._num_servers)]
-    #     self.dh_shares = [self._kex.get_public(secret) for secret in self._dh_secrets]
-    #     self._resumption_dh_secret = self._kex.gen_private(self._rgen)
-    #     self.resumption_dh_share = self._kex.get_public(self._resumption_dh_secret)
-    #
-    # def exchange_all(self, server_shares):
-    #     if len(self._dh_secrets) == 0:
-    #         raise VerifierError('need to generate secrets first')
-    #     if len(self._dh_outputs) > 0:
-    #         raise VerifierError('already did key exchange')
-    #     assert len(server_shares) == self._num_servers
-    #     self._dh_outputs = [self._kex.exchange(priv, pub) for (priv,pub) in zip(self._dh_secrets, server_shares)]
-    #
-    # def compute_handshake_keys(self, hashes):
-    #     if len(self._dh_outputs) == 0:
-    #         raise VerifierError('need to run key exchange first')
-    #     if len(self._key_calcs) > 0:
-    #         raise VerifierError('already computed handshake keys')
-    #     assert len(hashes) == self._num_servers
-    #     hs_keys = []
-    #     for i, h in enumerate(hashes):
-    #         trans = PartialHandshakeTranscript()
-    #         key_calc = KeyCalc(trans)
-    #         key_calc.cipher_suite = self._ciphersuite
-    #         key_calc.psk = None
-    #         trans.set_hash(HandshakeType.SERVER_HELLO, h)
-    #         key_calc.kex_secret = self._dh_outputs[i]
-    #         self._key_calcs.append(key_calc)
-    #         hs_keys.append((key_calc.client_handshake_traffic_secret, key_calc.server_handshake_traffic_secret))
-    #     return hs_keys
-    #
-    # def compute_application_keys(self, hashes):
-    #     if len(self._key_calcs) == 0:
-    #         raise VerifierError('need to compute handshake keys first')
-    #
-    #     app_keys = []
-    #     for key_calc, h in zip(self._key_calcs, hashes):
-    #         key_calc._hs_trans.set_hash(HandshakeType.FINISHED, h, from_client=False)
-    #         app_keys.append((key_calc.client_application_traffic_secret, key_calc.server_application_traffic_secret))
-    #     return app_keys
-    #
-    # def get_master_secrets(self):
-    #     return [key_calc.master_secret for key_calc in self._key_calcs]

@@ -2,31 +2,31 @@
 import socket
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from functools import cached_property
 from random import Random
 from secrets import SystemRandom
 from typing import Iterable, override
 
-from cryptography.hazmat.primitives.ciphers import Cipher
+from cryptography.hazmat.primitives.hashes import SHA256, Hash
 
 from proof_common import ProverError
 from proof_spec import ClientHelloValues
+from spec import force_write, UnpackError, LimitReader
 from tls13_spec import Version, \
-    ClientState, CipherSuite, ClientOptions, NamedGroup, ClientHelloHandshake, KeyShareClientExtension, \
+    CipherSuite, ClientOptions, NamedGroup, ClientHelloHandshake, KeyShareClientExtension, \
     SupportedGroupsClientExtension, SignatureAlgorithmsClientExtension, SupportedVersionsClientExtension, \
     PskKeyExchangeModesClientExtension, GenericClientExtension, ExtensionTypes, EncryptedClientHelloClientExtension, \
     InnerECHClientHello, Uint64, PreSharedKeyClientExtension, \
     ClientExtensionVariant, ECHConfigVariant, ServerNameClientExtension, ServerHelloHandshake, \
     KeyShareServerExtension, SupportedVersionsServerExtension, PreSharedKeyServerExtension, HandshakeTypes, ContentType, \
-    RecordHeader, ClientStates, EncryptedExtensionsHandshake, FinishedHandshake
-from tls_client import ClientHandshake, build_client_hello, _ChelloExtensions, connect_client
+    ClientStates, EncryptedExtensionsHandshake, FinishedHandshake, Record
+from tls_client import ClientHandshake, _ChelloExtensions, connect_client
 from tls_common import TlsError, TlsTODO, logger
 from tls_crypto import get_kex_alg, DEFAULT_SIGNATURE_SCHEMES, get_hash_alg, \
-    get_cipher_alg, DEFAULT_KEX_MODES
+    get_cipher_alg, DEFAULT_KEX_MODES, StreamCipher
 from tls_ech import OuterPrep, server_accepts_ech
 from tls_keycalc import KeyCalc, HandshakeTranscript, TicketInfo, current_time_milli
 from tls_records import RecordWriter, DEFAULT_LEGACY_VERSION, DEFAULT_LEGACY_COMPRESSION, RecordTranscript, DataBuffer, \
-    RecordReader, InnerPlaintext, CCS_MESSAGE
+    RecordReader, InnerPlaintext, CCS_MESSAGE, get_header
 from tls_server import ServerID
 
 DEFAULT_PROVER_CLIENT_OPTIONS = ClientOptions.create(
@@ -47,6 +47,12 @@ send_sni = True,
 class ProverSecrets:
     index: int
     queries: list[bytes]
+
+@dataclass(kw_only=True)
+class RawStreamCipher(StreamCipher):
+    key: bytes
+    iv: bytes
+    secret: bytes = field(init=False)
 
 @dataclass
 class ProverHandshake(ClientHandshake):
@@ -175,11 +181,9 @@ class ProverClient:
     rseed: int|None = None
 
     def __init__(self, server: ServerID, rseed=None) -> None:
-
         self.server = server
         self.app_data_in = DataBuffer()
         self.rseed = rseed
-
 
     def __del__(self):
         """Fallback way to close the socket. The expected use is to close the connection manually when it's no
@@ -201,7 +205,7 @@ class ProverClient:
             client.close_notify()
             if len(client.ech_configs) == 0:
                 raise ProverError('no ECH configs obtained')
-            self.ech_configs = client.ech_configs
+            self.ech_configs = client.ech_configs[:1]
 
         self.options = self.options.replace(ech_configs=self.ech_configs[:1])
         logger.info(f'obtained ECH public key: {self.ech_configs[0].data.key_config.public_key}')
@@ -212,12 +216,6 @@ class ProverClient:
             raise AttributeError('no ECH config stored')
         if hello_vals.hostname != self.server.hostname:
             raise ValueError('hostname mismatch')
-
-        # TODO: test remove
-        try:
-            build_client_hello(hello_vals.hostname, self.options, self.rseed)
-        except:
-            pass
 
         ech, inner_ch = build_prover_client_hello(hello_vals, self.options, self.rseed)
         self.handshake = ProverHandshake(chello=ech, inner_ch=inner_ch)
@@ -271,7 +269,7 @@ class ProverClient:
         )
         self.handshake.rwriter.rekey(
             self.handshake.key_calc.cipher_suite,
-            self.handshake.key_calc.server_handshake_traffic_secret
+            self.handshake.key_calc.client_handshake_traffic_secret
         )
 
         while not self.handshake.connected:
@@ -285,21 +283,116 @@ class DummyClient(ProverClient):
     def master_secret(self) -> bytes:
         return self.handshake.key_calc.master_secret
 
+    def derive_application_keys(self):
+        if self.handshake.rreader is None or self.handshake.rwriter is None:
+            raise AttributeError('handshake not started')
+        self.handshake.rreader.rekey(
+            self.handshake.key_calc.cipher_suite,
+            self.handshake.key_calc.server_application_traffic_secret
+        )
+        self.handshake.rwriter.rekey(
+            self.handshake.key_calc.cipher_suite,
+            self.handshake.key_calc.client_application_traffic_secret
+        )
+
+    def encrypt_and_send(self, appdata: bytes) -> None:
+        if not self.handshake.can_send or self.handshake.rwriter is None:
+            raise AttributeError("can't send application data at this stage")
+        buf = bytearray(appdata)
+        maxp = self.handshake.rwriter.max_payload
+        while buf:
+            self.handshake.rwriter.send(Record.create(
+                typ=ContentType.APPLICATION_DATA,
+                version=DEFAULT_LEGACY_VERSION,
+                payload=bytes(buf[:maxp])
+            ))
+            del buf[:maxp]
+
+    def recv_response(self) -> None:
+        while not self.app_data_in:
+            self.handshake.recv_message()
+
 class TwoPCClient(ProverClient):
+    response_ciphertexts: list[Record] = []
+
     def set_chts_shts(self, chts: bytes, shts: bytes) -> None:
         self.handshake.key_calc.client_handshake_traffic_secret = chts
         self.handshake.key_calc.server_handshake_traffic_secret = shts
 
+    def set_application_keys(
+        self,
+        client_key: bytes,
+        server_key: bytes,
+        client_iv: bytes,
+        server_iv: bytes
+    ) -> None:
+        if self.handshake.rreader is None or self.handshake.rwriter is None:
+            raise AttributeError('handshake not started')
+
+        csuite = self.handshake.key_calc.cipher_suite
+        logger.info(f"rekeying record reader to key {server_key.hex()[:16]}...")
+        self.handshake.rreader.unwrapper = RawStreamCipher(csuite=csuite, key=server_key, iv=server_iv)
+        self.handshake.rreader.key_count += 1
+
+        logger.info(f"rekeying record writer to key {client_key.hex()[:16]}...")
+        self.handshake.rwriter.wrapper = RawStreamCipher(csuite=csuite, key=client_key, iv=client_iv)
+        self.handshake.rwriter.key_count += 1
+
+    def buffer_encrypted_responses(self) -> None:
+        if self.handshake.rreader is None:
+            raise AttributeError('handshake not started')
+        #while not self.app_data_in:
+        for _ in range(2): # TODO: remove hardcoded number of server responses
+            logger.info('trying to fetch an encrypted record from the incoming stream [2PC]')
+            record_src = LimitReader(self.handshake.rreader.file)
+            try:
+                record = Record.unpack_from(record_src)
+            except (UnpackError, EOFError) as e:
+                raise TlsError("error unpacking record from server") from e
+            raw: bytes = record_src.got
+            logger.info(f'Fetched a size-{len(raw)} record of type {record.typ} [2PC]')
+            if record.typ != ContentType.APPLICATION_DATA:
+                raise TlsError(f'expected record of type {ContentType.APPLICATION_DATA}, got {record.typ}')
+
+            self.response_ciphertexts.append(record)
+
+    def decrypt_server_responses(self) -> None:
+        if self.handshake.rreader is None or self.handshake.rreader.unwrapper is None:
+            raise AttributeError('handshake not started')
+        if len(self.response_ciphertexts) == 0:
+            raise AttributeError('no response buffered')
+        for response in self.response_ciphertexts:
+            ipt = InnerPlaintext.unpack(
+                self.handshake.rreader.unwrapper.decrypt(
+                    ctext=response.payload,
+                    adata=get_header(response).pack(),
+                )
+            )
+            record = ipt.to_record(response.version)
+            logger.info(f'Decrypted record to length-{len(record.payload)} of type {record.typ} [2PC SERVER]')
+            self.handshake.rreader.transcript.add(
+                raw = response.pack(), # TODO: not sure if this is the right thing to pass as raw
+                record = record,
+                sent = False
+            )
+            self.handshake.rreader.app_data_buffer.add(response.payload) # TODO: might be wrong
+
+    def send_raw(self, raw: bytes) -> None:
+        if not self.handshake.can_send or self.handshake.rwriter is None:
+            raise AttributeError("can't send application data at this stage")
+        force_write(self.handshake.rwriter.file, raw)
+        logger.info(f'sent raw encrypted record of size {len(raw)}')
+
 class ProverCryptoManager:
     servers: list[ServerID]
     secrets: ProverSecrets
-    clients: list[ProverClient] = []
+    clients: list[ProverClient]
     client_key_share: bytes
     client_key_iv: bytes
     server_key_share: bytes
     server_key_iv: bytes
     ciphersuite: CipherSuite = CipherSuite.TLS_AES_128_GCM_SHA256
-    rseed: int|None = None
+    rgen: Random
 
     def __init__(
         self,
@@ -309,8 +402,9 @@ class ProverCryptoManager:
     ) -> None:
         self.servers = servers
         self.secrets = secrets
-        self.rseed = rseed
+        self.rgen = Random(rseed) if rseed is not None else SystemRandom()
 
+        self.clients = []
         for i, server in enumerate(servers):
             rseed = None if rseed is None else rseed + i
             if i == secrets.index:
@@ -323,32 +417,6 @@ class ProverCryptoManager:
         client = self.clients[self.secrets.index]
         assert isinstance(client, TwoPCClient)
         return client
-
-    def create_sockets(self):
-        for client in self.clients:
-            client.create_socket()
-
-    def close_sockets(self):
-        for client in self.clients:
-            client.close()
-
-    def obtain_ech_configs(self):
-        with ThreadPoolExecutor(max_workers=len(self.servers), thread_name_prefix='prover') as executor:
-            futures = [executor.submit(lambda x: x.obtain_ech_config(),client) for client in self.clients]
-
-        # this ensures any exception encountered in a thread will be raised
-        [f.result() for f in futures]
-
-    def build_ech_configs(self, hello_vals: list[ClientHelloValues]):
-        for (client, vals) in zip(self.clients, hello_vals):
-            client.build_ech(vals)
-
-    def send_and_recv_hellos(self) -> None:
-        with ThreadPoolExecutor(max_workers=len(self.servers), thread_name_prefix='prover') as executor:
-            futures = [executor.submit(lambda x: x.send_ech(), client) for client in self.clients]
-
-        # this ensures any exception encountered in a thread will be raised
-        [f.result() for f in futures]
 
     @property
     def server_key_shares(self) -> list[list[tuple[NamedGroup, bytes]]]:
@@ -373,19 +441,56 @@ class ProverCryptoManager:
     def real_server_application_hash(self) -> bytes:
         return self.twopc_client.application_transcript_hash
 
-    @cached_property
-    def query_header(self) -> bytes:
-        raw_secret = self.secrets.queries[self.secrets.index]
-        ptext = InnerPlaintext.create(
-            payload = raw_secret,
-            typ = ContentType.APPLICATION_DATA,
-            padding = 0
-        ).pack()
-        return RecordHeader.create(
-            typ = ContentType.APPLICATION_DATA,
-            version = DEFAULT_LEGACY_VERSION,
-            size = get_cipher_alg(self.ciphersuite).ctext_size(len(ptext))
-        ).pack()
+    @property
+    def query_commitment(self) -> bytes:
+        secret_query = self.secrets.queries[self.secrets.index]
+        # TODO: replace this with a ZK-friendly commitment scheme
+        nonce = self.rgen.randbytes(32)
+        hasher = Hash(SHA256())
+        hasher.update(secret_query)
+        return hasher.finalize()
+
+    @property
+    def response_commitments(self) -> list[bytes]:
+        if len(self.twopc_client.response_ciphertexts) == 0:
+            raise AttributeError('response not received')
+
+        commitments = []
+        for response in self.twopc_client.response_ciphertexts:
+            # TODO: replace this with a ZK-friendly commitment scheme
+            ctext = response.payload.pack()
+            nonce = self.rgen.randbytes(32)
+            hasher = Hash(SHA256())
+            hasher.update(ctext)
+            hasher.update(nonce)
+            commitments.append(hasher.finalize())
+        return commitments
+
+    def create_sockets(self) -> None:
+        for client in self.clients:
+            client.create_socket()
+
+    def close_sockets(self) -> None:
+        for client in self.clients:
+            client.close()
+
+    def obtain_ech_configs(self) -> None:
+        with ThreadPoolExecutor(max_workers=len(self.servers), thread_name_prefix='prover') as executor:
+            futures = [executor.submit(lambda x: x.obtain_ech_config(),client) for client in self.clients]
+
+        # this ensures any exception encountered in a thread will be raised
+        [f.result() for f in futures]
+
+    def build_ech_configs(self, hello_vals: list[ClientHelloValues]) -> None:
+        for (client, vals) in zip(self.clients, hello_vals):
+            client.build_ech(vals)
+
+    def send_and_recv_hellos(self) -> None:
+        with ThreadPoolExecutor(max_workers=len(self.servers), thread_name_prefix='prover') as executor:
+            futures = [executor.submit(lambda x: x.send_ech(), client) for client in self.clients]
+
+        # this ensures any exception encountered in a thread will be raised
+        [f.result() for f in futures]
 
     def set_dummy_handshake_secets(self, secrets: list[bytes]) -> None:
         for i, (client, secret) in enumerate(zip(self.clients, secrets)):
@@ -397,10 +502,52 @@ class ProverCryptoManager:
     def set_chts_shts(self, chts: bytes, shts: bytes) -> None:
         self.twopc_client.set_chts_shts(chts, shts)
 
-    def finish_handshakes(self):
-        for client in self.clients:
-            client.finish_handshake()
+    def set_application_key_shares(self, ck_share: bytes, c_iv: bytes, sk_share: bytes, s_iv: bytes) -> None:
+        self.client_key_share = ck_share
+        self.client_key_iv = c_iv
+        self.server_key_share = sk_share
+        self.server_key_iv = s_iv
 
+    def finish_handshakes(self) -> None:
+        with ThreadPoolExecutor(max_workers=len(self.servers), thread_name_prefix='prover') as executor:
+            futures = [executor.submit(lambda x: x.finish_handshake(), client) for client in self.clients]
+        [f.result() for f in futures]
+
+        for client in self.clients:
+            if isinstance(client, DummyClient):
+                client.derive_application_keys()
+
+    def send_queries(self, encrypted_record: bytes) -> None:
+        def _send_query(client: ProverClient, query: bytes) -> None:
+            if isinstance(client, DummyClient):
+                client.encrypt_and_send(query)
+            elif isinstance(client, TwoPCClient):
+                client.send_raw(encrypted_record)
+
+        with ThreadPoolExecutor(max_workers=len(self.servers), thread_name_prefix='prover') as executor:
+            futures = [executor.submit(_send_query, client, query) for client, query in zip(self.clients, self.secrets.queries)]
+        [f.result() for f in futures]
+
+    def recv_responses(self) -> None:
+        def _recv_response(client: ProverClient) -> None:
+            if isinstance(client, DummyClient):
+                client.recv_response()
+            elif isinstance(client, TwoPCClient):
+                client.buffer_encrypted_responses()
+
+        with ThreadPoolExecutor(max_workers=len(self.servers), thread_name_prefix='prover') as executor:
+            futures = [executor.submit(_recv_response, client) for client in self.clients]
+
+        # this ensures any exception encountered in a thread will be raised
+        [f.result() for f in futures]
+
+    def reconstruct_application_keys(self, ver_ck_share: bytes, ver_sk_share: bytes) -> None:
+        client_key = bytes(a ^ b for a, b in zip(ver_ck_share, self.client_key_share))
+        server_key = bytes(a ^ b for a, b in zip(ver_sk_share, self.server_key_share))
+        self.twopc_client.set_application_keys(client_key, server_key, self.client_key_iv, self.server_key_iv)
+
+    def decrypt_real_server_responses(self) -> None:
+        self.twopc_client.decrypt_server_responses()
 
 def build_prover_client_hello(
         hello_vals: ClientHelloValues,

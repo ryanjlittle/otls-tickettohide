@@ -223,7 +223,7 @@ class ClientHelloValues(spec._StructBase):
 
 class ProverMsgTypes(enum.IntEnum):
     KEX_SHARES = 1
-    COMMITMENT = 2
+    COMMITMENTS = 2
     PROOF = 3
     KEY_SHARE_TEST1 = 4
     KEY_SHARE_TEST2 = 5
@@ -238,7 +238,7 @@ class ProverMsgType(spec._NamedConstBase[ProverMsgTypes]):
     _V = Uint8
     _BYTE_LENGTH = Uint8._BYTE_LENGTH
     KEX_SHARES: 'ProverMsgType'
-    COMMITMENT: 'ProverMsgType'
+    COMMITMENTS: 'ProverMsgType'
     PROOF: 'ProverMsgType'
     KEY_SHARE_TEST1: 'ProverMsgType'
     KEY_SHARE_TEST2: 'ProverMsgType'
@@ -442,23 +442,18 @@ class KexSharesProverMsg(spec._SpecificSelectee[ProverMsgTypes, B16SeqB16SeqKexS
     def parent(self) -> 'ProverMsg':
         return ProverMsg(self)
 
-@dataclass(frozen=True)
-class CommitmentProverMsgData(spec._StructBase):
-    _member_names: ClassVar[tuple[str,...]] = ('commitment',)
-    _member_types: ClassVar[tuple[type[Spec],...]] = (B16Raw,)
-    commitment: B16Raw
-
-    def replace(self, commitment:bytes|None=None) -> Self:
-        return type(self)((self.commitment if commitment is None else B16Raw.create(commitment)))
+class SeqB8Raw(spec._Sequence[B8Raw]):
+    _ITEM_TYPE = B8Raw
 
     @classmethod
-    def create(cls,commitment:bytes) -> Self:
-        return cls(commitment=B16Raw.create(commitment))
+    def create(cls, items: Iterable[bytes]) -> Self:
+        return cls(B8Raw.create(item) for item in items)
 
-    def uncreate(self) -> bytes:
-        return (self.commitment.uncreate())
+    def uncreate(self) -> Iterable[bytes]:
+        for item in self:
+            yield item.uncreate()
 
-class BoundedCommitmentProverMsgData(CommitmentProverMsgData, Spec):
+class BoundedSeqB8Raw(SeqB8Raw, Spec):
     _LENGTH_TYPES: tuple[type[spec._Integral],...]
 
     @override
@@ -513,23 +508,102 @@ class BoundedCommitmentProverMsgData(CommitmentProverMsgData, Spec):
         except UnpackError as e:
             raise e.above(src.got, {'bounded_size': length, 'data': e.partial}) from e
 
-class B16CommitmentProverMsgData(BoundedCommitmentProverMsgData):
+class B16SeqB8Raw(BoundedSeqB8Raw):
     _LENGTH_TYPES = (Uint16, )
 
-class CommitmentProverMsg(spec._SpecificSelectee[ProverMsgTypes, B16CommitmentProverMsgData]):
-    _SELECT_TYPE = ProverMsgType
-    _DATA_TYPE = B16CommitmentProverMsgData
-    _SELECTOR = ProverMsgTypes.COMMITMENT
+@dataclass(frozen=True)
+class CommitmentsProverMsgData(spec._StructBase):
+    _member_names: ClassVar[tuple[str,...]] = ('query_commitment','response_commitments',)
+    _member_types: ClassVar[tuple[type[Spec],...]] = (B8Raw,B16SeqB8Raw,)
+    query_commitment: B8Raw
+    response_commitments: B16SeqB8Raw
+
+    def replace(self, query_commitment:bytes|None=None, response_commitments:Iterable[bytes]|None=None) -> Self:
+        return type(self)((self.query_commitment if query_commitment is None else B8Raw.create(query_commitment)), (self.response_commitments if response_commitments is None else B16SeqB8Raw.create(response_commitments)))
 
     @classmethod
-    def create(cls, commitment:bytes) -> Self:
-        return cls(data=B16CommitmentProverMsgData.create(commitment))
+    def create(cls,query_commitment:bytes,response_commitments:Iterable[bytes]) -> Self:
+        return cls(query_commitment=B8Raw.create(query_commitment), response_commitments=B16SeqB8Raw.create(response_commitments))
 
-    def uncreate(self) -> bytes:
+    def uncreate(self) -> tuple[bytes, Iterable[bytes]]:
+        return (self.query_commitment.uncreate(), self.response_commitments.uncreate())
+
+class BoundedCommitmentsProverMsgData(CommitmentsProverMsgData, Spec):
+    _LENGTH_TYPES: tuple[type[spec._Integral],...]
+
+    @override
+    def packed_size(self) -> int:
+        return sum(LT._BYTE_LENGTH for LT in self._LENGTH_TYPES) + super().packed_size()
+
+    @override
+    def pack(self) -> bytes:
+        raw = super().pack()
+        length = len(raw)
+        parts = [raw]
+        for LT in reversed(self._LENGTH_TYPES):
+            parts.append(LT(length).pack())
+            length += LT._BYTE_LENGTH
+        parts.reverse()
+        return b''.join(parts)
+
+    @override
+    def pack_to(self, dest: BinaryIO) -> int:
+        return Spec.pack_to(self, dest)
+
+    @override
+    @classmethod
+    def unpack(cls, raw: bytes) -> Self:
+        offset = 0
+        for LT in cls._LENGTH_TYPES:
+            lenlen = LT._BYTE_LENGTH
+            if len(raw) < offset + lenlen:
+                raise ValueError
+            length = LT.unpack(raw[offset:offset+lenlen])
+            if len(raw) != offset + lenlen + length:
+                raise ValueError
+            offset += lenlen
+        try:
+            return super().unpack(raw[offset:])
+        except UnpackError as e:
+            raise e.above(raw, {'bounded_size': length, 'data': e.partial}) from e
+
+    @override
+    @classmethod
+    def unpack_from(cls, src: LimitReader) -> Self:
+        lit = iter(cls._LENGTH_TYPES)
+        length = next(lit).unpack_from(src)
+        for LT in lit:
+            len2 = LT.unpack_from(src)
+            if length != LT._BYTE_LENGTH + len2:
+                raise UnpackError(src.got, f"bounded length should have been {length - LT._BYTE_LENGTH} but got {len2}")
+            length = len2
+        supraw = src.read(length)
+        try:
+            return super().unpack(supraw)
+        except UnpackError as e:
+            raise e.above(src.got, {'bounded_size': length, 'data': e.partial}) from e
+
+class B16CommitmentsProverMsgData(BoundedCommitmentsProverMsgData):
+    _LENGTH_TYPES = (Uint16, )
+
+class CommitmentsProverMsg(spec._SpecificSelectee[ProverMsgTypes, B16CommitmentsProverMsgData]):
+    _SELECT_TYPE = ProverMsgType
+    _DATA_TYPE = B16CommitmentsProverMsgData
+    _SELECTOR = ProverMsgTypes.COMMITMENTS
+
+    @classmethod
+    def create(cls, query_commitment:bytes, response_commitments:Iterable[bytes]) -> Self:
+        return cls(data=B16CommitmentsProverMsgData.create(query_commitment, response_commitments))
+
+    def uncreate(self) -> tuple[bytes,Iterable[bytes]]:
         return self.data.uncreate()
 
     def parent(self) -> 'ProverMsg':
         return ProverMsg(self)
+
+    def replace(self, query_commitment: bytes|None=None, response_commitments: Iterable[bytes]|None=None) -> Self:
+        orig_query_commitment, orig_response_commitments = self.uncreate()
+        return self.create((orig_query_commitment if query_commitment is None else query_commitment), (orig_response_commitments if response_commitments is None else response_commitments))
 
 @dataclass(frozen=True)
 class ProofProverMsgData(spec._StructBase):
@@ -804,12 +878,12 @@ class KeyShareTest2ProverMsg(spec._SpecificSelectee[ProverMsgTypes, B16KeyShareT
         return self.create((orig_group if group is None else group), (orig_pubkey if pubkey is None else pubkey))
 
 
-ProverMsgVariant = KexSharesProverMsg | CommitmentProverMsg | ProofProverMsg | KeyShareTest1ProverMsg | KeyShareTest2ProverMsg
+ProverMsgVariant = KexSharesProverMsg | CommitmentsProverMsg | ProofProverMsg | KeyShareTest1ProverMsg | KeyShareTest2ProverMsg
 
 class ProverMsg(spec._Select[ProverMsgTypes]):
     _SELECT_TYPE = ProverMsgType
     _GENERIC_TYPE = None
-    _SELECTEES = {ProverMsgTypes.KEX_SHARES:KexSharesProverMsg, ProverMsgTypes.COMMITMENT:CommitmentProverMsg, ProverMsgTypes.PROOF:ProofProverMsg, ProverMsgTypes.KEY_SHARE_TEST1:KeyShareTest1ProverMsg, ProverMsgTypes.KEY_SHARE_TEST2:KeyShareTest2ProverMsg}
+    _SELECTEES = {ProverMsgTypes.KEX_SHARES:KexSharesProverMsg, ProverMsgTypes.COMMITMENTS:CommitmentsProverMsg, ProverMsgTypes.PROOF:ProofProverMsg, ProverMsgTypes.KEY_SHARE_TEST1:KeyShareTest1ProverMsg, ProverMsgTypes.KEY_SHARE_TEST2:KeyShareTest2ProverMsg}
 
     def __init__(self, value: ProverMsgVariant) -> None:
         super().__init__(value)

@@ -3,9 +3,13 @@ from enum import IntEnum
 from mpc_tls import HandshakeSecretTrustedParty, MasterSecretTrustedParty, EncryptionTrustedParty
 from proof_common import *
 from proof_connections import VerifierConnection
-from proof_spec import TicketsVerifierMsg, KexSharesProverMsg, HandshakeSecretsVerifierMsg, MasterSecretsVerifierMsg
+from proof_spec import TicketsVerifierMsg, KexSharesProverMsg, HandshakeSecretsVerifierMsg, MasterSecretsVerifierMsg, \
+    CommitmentsProverMsg, AppKeySharesVerifierMsg
 from prover_crypto import ProverSecrets, ProverCryptoManager
+from tls13_spec import ContentType, RecordHeader
 from tls_common import *
+from tls_crypto import get_cipher_alg
+from tls_records import InnerPlaintext, DEFAULT_LEGACY_VERSION
 from tls_server import ServerID
 
 
@@ -69,6 +73,7 @@ class Prover:
 
     def increment_state(self):
         self.state = self.state.next()
+        logger.info(f'incremented state, now in {self.state}')
 
     @property
     def handler(self) -> dict[ProverState, Callable]:
@@ -109,6 +114,8 @@ class Prover:
         msg = self.verifier_connection.recv_msg()
         if not isinstance(msg, TicketsVerifierMsg):
             raise ProverError(f'received unexpected message type: {msg.typ}')
+        if len(list(msg.data)) != len(self.servers):
+            raise ProverError(f'received {len(list(msg.data))} tickets, expected {len(self.servers)}')
 
         self.crypto_manager.build_ech_configs(list(msg.data))
         self.increment_state()
@@ -120,7 +127,6 @@ class Prover:
         kex_shares = self.crypto_manager.server_key_shares
         msg = KexSharesProverMsg.create(kex_shares)
         self.verifier_connection.send_msg(msg)
-
         self.increment_state()
 
     def twopc_handshake_hkdf(self) -> None:
@@ -158,10 +164,7 @@ class Prover:
         trusted_party.verifier_input = list(msg.data.uncreate())
         trusted_party.compute()
         secrets, ck_share, civ, sk_share, siv = trusted_party.prover_output
-        self.crypto_manager.client_key_share = ck_share
-        self.crypto_manager.server_key_share = sk_share
-        self.crypto_manager.client_key_iv = civ
-        self.crypto_manager.server_key_iv = siv
+        self.crypto_manager.set_application_key_shares(ck_share, civ, sk_share, siv)
 
         # TODO: testing only, remove these
         vck_share, civ1, vsk_share, siv1, commit1, commit2 = trusted_party.verifier_output
@@ -183,21 +186,54 @@ class Prover:
         assert self.state == ProverState.WAIT_2PC_ENC
 
         # TODO: replace with actual MPC
+        query = self.secrets.queries[self.secrets.index]
+        plaintext = InnerPlaintext.create(
+                payload = query,
+                typ     = ContentType.APPLICATION_DATA,
+                padding = 0,
+        ).pack()
+        header = RecordHeader.create(
+            typ = ContentType.APPLICATION_DATA,
+            version = DEFAULT_LEGACY_VERSION,
+            size = get_cipher_alg(self.crypto_manager.ciphersuite).ctext_size(len(plaintext))
+        ).pack()
         trusted_party = EncryptionTrustedParty()
-        plaintext = self.secrets.queries[self.secrets.index]
         trusted_party.prover_input = (self.crypto_manager.client_key_share, plaintext)
         trusted_party.verifier_input = self.verifier_client_key_share
-        trusted_party.public_input = (self.crypto_manager.client_key_iv, self.crypto_manager.query_header)
+        trusted_party.public_input = (self.crypto_manager.client_key_iv, header)
         trusted_party.compute()
+        ciphertext = trusted_party.prover_output
+        raw = header + ciphertext
 
-        # TODO: send all queries
-
+        self.crypto_manager.send_queries(raw)
+        logger.info('sent queries to all servers')
         self.increment_state()
 
     def process_response(self) -> None:
         assert self.state == ProverState.WAIT_RESPONSE
+        self.crypto_manager.recv_responses()
+        logger.info('received responses from all servers')
+
+        query_commitment = self.crypto_manager.query_commitment
+        response_commitments = self.crypto_manager.response_commitments
+
+        msg = CommitmentsProverMsg.create(query_commitment, response_commitments)
+        self.verifier_connection.send_msg(msg)
         self.increment_state()
 
     def process_key_share(self) -> None:
         assert self.state == ProverState.WAIT_KEY_SHARES
+        msg = self.verifier_connection.recv_msg()
+        if not isinstance(msg, AppKeySharesVerifierMsg):
+            raise ProverError(f'received unexpected message type: {msg.typ}')
+
+        #verifier_client_key_share = msg.data.client_key_share
+        #verifier_server_key_share = msg.data.server_key_share
+        # TODO: replace the shares with the real shares from the verifier's message (commented out above)
+        self.crypto_manager.reconstruct_application_keys(self.verifier_client_key_share, self.verifier_server_key_share)
+        self.crypto_manager.decrypt_real_server_responses()
+        logger.info('decryption of real server succeeded')
+        # TODO: remove
+        for client in self.crypto_manager.clients:
+            logger.info(f'record received from server {client.server.hostname}: {client.handshake.rreader.transcript.records[-1].record.payload}')
         self.increment_state()

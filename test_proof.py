@@ -57,7 +57,9 @@ class ProofTest:
             thread.join()
 
     def run_on_real_server(self):
-        self.server_ids = [ServerID(hostname='test.defo.ie', port=443)]
+        self.server_ids = [ServerID(hostname='test.defo.ie', port=443), ServerID(hostname='test.defo.ie', port=443)]
+        #self.server_ids = [ServerID(hostname='interclip.app', port=443)]
+
         self.start_prover()
         self.start_verifier()
 
@@ -109,7 +111,7 @@ class ProofTest:
         #self.prover = HttpsProver(self.server_ids, 0, None, rseed=self.rseed) # TODO: these shouldn't be hardcoded
         prover_secrets = ProverSecrets(
             index = 0,
-            queries = [f'hello server {i}'.encode('utf8') for i in range(len(self.server_ids))]
+            queries = [http_get_req(server.hostname, '/') for server in self.server_ids],
         )
 
         def _run_prover(server_ids, secrets):
@@ -206,9 +208,8 @@ def experiment_ech_test():
 
         print(f'tickets: {client.tickets}')
 
-def test_ech_with_ticket():
+def test_ech_with_ticket(hostname, port):
     # hostname, port = 'localhost', 8000
-    hostname, port = 'test.defo.ie', 443
 
     # server = TestServer(hostname, port, max_responses=4)
     #
@@ -318,10 +319,10 @@ class TestServer:
 
 
 if __name__ == '__main__':
-    num_servers = 1
+    num_servers = 2
     rseed = 0
 
-    # test_ech_with_ticket()
+    # test_ech_with_ticket('test.defo.ie', 443)
 
     test = ProofTest(num_servers, rseed=rseed)
 

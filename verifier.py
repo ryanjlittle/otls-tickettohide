@@ -1,12 +1,11 @@
 from enum import IntEnum
-from time import sleep
 
 from proof_common import VerifierError
 from proof_connections import ProverConnection
-from proof_spec import VerifierMsgType, ProverMsgType, TicketsVerifierMsg, ClientHelloValues, KexSharesProverMsg, \
-    HandshakeSecretsVerifierMsg, MasterSecretsVerifierMsg, CommitmentProverMsg
+from proof_spec import TicketsVerifierMsg, KexSharesProverMsg, \
+    HandshakeSecretsVerifierMsg, MasterSecretsVerifierMsg, CommitmentsProverMsg, AppKeySharesVerifierMsg
 from prover_crypto import DEFAULT_PROVER_CLIENT_OPTIONS
-from tls13_spec import Handshake, ExtensionType, HandshakeType, ClientOptions
+from tls13_spec import ClientOptions
 from tls_common import *
 from tls_server import ServerID
 from verifier_crypto import VerifierCryptoManager
@@ -64,6 +63,7 @@ class Verifier:
 
     def increment_state(self) -> None:
         self.state = self.state.next()
+        logger.info(f'incremented state, now in {self.state}')
 
     @property
     def handler(self) -> dict[VerifierState, Callable]:
@@ -131,6 +131,7 @@ class Verifier:
 
     def twopc_application_hkdf(self) -> None:
         assert self.state == VerifierState.WAIT_2PC_APP_HKDF
+        # TODO: replace this with actual MPC
         master_secrets = self.crypto_manager.master_secrets
         msg = MasterSecretsVerifierMsg.create(master_secrets)
         self.prover_conn.send_msg(msg)
@@ -138,21 +139,28 @@ class Verifier:
 
     def twopc_encryption(self) -> None:
         assert self.state == VerifierState.WAIT_2PC_ENC
+        # TODO: replace this with actual MPC
         self.increment_state()
 
     def process_commitment(self) -> None:
         assert self.state == VerifierState.WAIT_COMMITMENT
-        # msg = self.prover_conn.recv_msg()
-        # if not isinstance(msg, CommitmentProverMsg):
-        #     raise VerifierError(f'received unexpected message type: {msg.typ}')
-        #
-        # self.crypto_manager.commitment = msg.data.uncreate()
+        msg = self.prover_conn.recv_msg()
+        if not isinstance(msg, CommitmentsProverMsg):
+            raise VerifierError(f'received unexpected message type: {msg.typ}')
+
+        self.crypto_manager.query_commitment = msg.data.query_commitment
+        self.crypto_manager.response_commitments = [commit.uncreate() for commit in msg.data.response_commitments]
+
+        # TODO: replace with real shares generated via MPC
+        client_key_share = b'\x00'*32
+        server_key_share = b'\x00'*32
+
+        msg = AppKeySharesVerifierMsg.create(client_key_share=client_key_share, server_key_share=server_key_share)
+        self.prover_conn.send_msg(msg)
+
         self.increment_state()
 
     def process_proof(self) -> None:
         assert self.state == VerifierState.WAIT_PROOF
         # TODO
         self.increment_state()
-
-
-

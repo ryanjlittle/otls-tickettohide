@@ -142,10 +142,10 @@ class RecordTranscript:
 @dataclass
 class RecordReader:
     file: BinaryIO
-    _transcript: RecordTranscript
-    _app_data_buffer: DataBuffer
-    _unwrapper: StreamCipher|None = None
-    _key_count: int = -1
+    transcript: RecordTranscript
+    app_data_buffer: DataBuffer
+    unwrapper: StreamCipher | None = None
+    key_count: int = -1
     _hs_buffer: HandshakeBuffer|None = None
 
     @property
@@ -160,8 +160,8 @@ class RecordReader:
 
     def rekey(self, csuite: CipherSuite, secret: bytes) -> None:
         logger.info(f"rekeying record reader to key {secret.hex()[:16]}...")
-        self._unwrapper = StreamCipher(csuite, secret)
-        self._key_count += 1
+        self.unwrapper = StreamCipher(csuite, secret)
+        self.key_count += 1
 
     def get_next_record(self) -> Record:
         logger.info('trying to fetch a record from the incoming stream')
@@ -174,10 +174,10 @@ class RecordReader:
 
         logger.info(f'Fetched a size-{len(raw)} record of type {record.typ}')
 
-        if record.typ == ContentType.APPLICATION_DATA and self._unwrapper is not None:
+        if record.typ == ContentType.APPLICATION_DATA and self.unwrapper is not None:
             wrapped = True
             ipt = InnerPlaintext.unpack(
-                self._unwrapper.decrypt(
+                self.unwrapper.decrypt(
                     ctext = record.payload,
                     adata = get_header(record).pack(),
                 )
@@ -185,7 +185,7 @@ class RecordReader:
             record = ipt.to_record(record.version)
             logger.info(f'Decrypted record to length-{len(record.payload)} of type {record.typ} with padding {ipt.padding.size}')
 
-        self._transcript.add(
+        self.transcript.add(
             raw    = raw,
             record = record,
             sent   = False,
@@ -209,7 +209,7 @@ class RecordReader:
                     raise CloseNotifyException(f'received close notify request, terminating')
                 raise TlsError(f"Received ALERT: {alert}")
             case ContentType.APPLICATION_DATA:
-                self._app_data_buffer.add(record.payload)
+                self.app_data_buffer.add(record.payload)
             case _:
                 raise TlsError(f"Received unexpected record of type {record.typ}")
 
