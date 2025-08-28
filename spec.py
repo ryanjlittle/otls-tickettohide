@@ -492,7 +492,7 @@ class _FixRaw(Raw, _Fixed):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         if len(self) != self._BYTE_LENGTH:
-            raise ValueError("expected {self._BYTE_LENGTH} bytes, got {self.hex()}")
+            raise ValueError(f"expected {self._BYTE_LENGTH} bytes, got {self.hex()}")
 
 class _Sequence[T: Spec](Spec, tuple[T,...]):
     _ITEM_TYPE: type[T]

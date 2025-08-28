@@ -1,7 +1,7 @@
 """Logic for TLS 1.3 server-side handshake."""
 
 from typing import override, Any
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from secrets import SystemRandom
 from random import Random
 from dataclasses import dataclass, field
@@ -23,6 +23,7 @@ from tls13_spec import (
     ServerSecrets,
     CertSecrets,
     EchSecrets,
+    EchKeyConfig,
     Record,
     CipherSuite,
 
@@ -43,6 +44,7 @@ from tls13_spec import (
     PreSharedKeyServerExtension,
     EncryptedClientHelloServerExtension,
 
+    ClientExtension,
     ClientExtensionVariant,
     SupportedVersionsClientExtension,
     ServerNameClientExtension,
@@ -82,6 +84,11 @@ from tls_crypto import (
     get_kex_alg,
     gen_server_secrets,
 )
+from tls_ech import (
+    EchType,
+    try_get_inner,
+    set_shello_ech,
+)
 
 @dataclass
 class _ServerHandshake(AbstractHandshake, PayloadProcessor):
@@ -98,15 +105,16 @@ class _ServerHandshake(AbstractHandshake, PayloadProcessor):
     kex_modes: set[PskKeyExchangeMode] = field(default_factory=set)
     _chello: ClientHelloHandshake|None = None
     _kex_info: tuple[KeyShareServerExtension,bytes]|None = None
-    saved_ech: OuterECHClientHello|None = None
+    ech_type: EchType = EchType.NONE
+    _outer_exts: tuple[ClientExtension,...]|None = None
 
     @property
     def cert_secrets(self) -> CertSecrets:
         return self.server_secrets.cert
 
     @cached_property
-    def ech_secrets_list(self) -> tuple[EchSecrets,...]:
-        return tuple(self.server_secrets.eches)
+    def ech_secrets(self) -> Iterable[EchSecrets]:
+        return self.server_secrets.eches
 
     @cached_property
     def rgen(self) -> Random:
@@ -187,17 +195,26 @@ class _ServerHandshake(AbstractHandshake, PayloadProcessor):
             case _:
                 raise TlsError(f"Unexpected {msg.typ} in state {self.state}")
 
-    def _process_client_hello(self, chello: ClientHelloHandshake) -> None:
+    def _process_client_hello(self, chello: ClientHelloHandshake, is_outer: bool = True) -> None:
         assert self.state == ServerStates.START
 
-        # TODO check for acceptance of ECH
+        if is_outer:
+            # check for ECH first
+            inner_ch = try_get_inner(chello, self.ech_secrets)
+
+            if inner_ch is not None:
+                logger.info(f"Decrypted ECH from client")
+                self._outer_exts = chello.data.extensions
+                self.ech_type = EchType.INNER
+                # reset the handshake transcript
+                self.hs_trans.clear()
+                self.hs_trans.add(inner_ch, from_client=True)
+                self._process_client_hello(chello=inner_ch, is_outer=False)
+                return
 
         self.state = ServerStates.RECVD_CH
         assert self._chello is None
-        assert self._chello is None
         self._chello = chello
-
-        ## negotiate parameters
 
         for csuite in chello.data.ciphers:
             try:
@@ -254,6 +271,10 @@ class _ServerHandshake(AbstractHandshake, PayloadProcessor):
             legacy_compression = DEFAULT_LEGACY_COMPRESSION[0],
             extensions         = self.sh_exts,
         )
+
+        if self.ech_type == EchType.INNER:
+            # confirm acceptance of ECH
+            sh = set_shello_ech(chello_inner=chello, shello=sh)
 
         self._send_hs_msg(sh)
         logger.info(f'sent SH')
@@ -372,15 +393,16 @@ class _ServerHandshake(AbstractHandshake, PayloadProcessor):
                     raise TlsError("none of the provided tickets could be used")
             case EncryptedClientHelloClientExtension():
                 match ext.data.variant:
-                    case OuterECHClientHello(data) as ech:
-                        logger.info(f'got ECH from client (that will be rejected) with config id {ech.data.config_id}')
-                        assert self.saved_ech is None
-                        self.saved_ech = ech
+                    case OuterECHClientHello() as ech:
+                        if self.ech_type == EchType.INNER:
+                            raise TlsError("received outer type ECH extension inside inner client hello")
+                        logger.info(f'rejected ECH from client with config id {ech.data.config_id}')
                         self.ee_exts.append(EncryptedClientHelloServerExtension.create(
-                            [es.config for es in self.ech_secrets_list],
+                            [es.config for es in self.ech_secrets],
                         ))
                     case InnerECHClientHello():
-                        raise TlsTODO("don't know how to handle inner ECH yet")
+                        if self.ech_type != EchType.INNER:
+                            raise TlsError("received inner type ECH inside outer client hello")
             case _:
                 match ext.typ:
                     case (ExtensionTypes.LEGACY_EC_POINT_FORMATS

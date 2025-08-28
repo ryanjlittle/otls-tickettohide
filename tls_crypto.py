@@ -615,10 +615,10 @@ class _PyhpkeCipherSuite(HpkeAlg):
         return enc, _PyhpkeContext(ctx)
 
     @override
-    def setup_base_r(self, enc: bytes, private: bytes, info: bytes
+    def setup_base_r(self, enc: bytes, privkey_r: bytes, info: bytes
                      ) -> ContextR:
         skr = self.csuite.kem.deserialize_private_key(
-            PyhpkeKeypair.unpack(private).private)
+            PyhpkeKeypair.unpack(privkey_r).private)
         ctx = self.csuite.create_recipient_context(enc=enc, skr=skr, info=info)
         return _PyhpkeContext(ctx)
 
