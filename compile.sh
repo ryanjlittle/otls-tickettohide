@@ -29,15 +29,17 @@ repo=otls
 # ######################
 echo "compile ${repo}"
 repo_dir=${curdir}
-mkdir -p ${builddir}/${repo}
-cd ${builddir}/${repo}
+mkdir -p ${builddir}
+cd ${builddir}
 
 cmake ${repo_dir} \
   -DTHREADING=${enable_threading} \
   -DENABLE_OTLS_TEST=${enable_test} \
   -DCMAKE_INSTALL_PREFIX=${installdir} \
   -DCMAKE_PREFIX_PATH=${primus_emp_installdir} \
-  -DCMAKE_BUILD_TYPE=${build_type}
+  -DCMAKE_BUILD_TYPE=${build_type} \
+  -DLOAD_CIRCUIT_FROM_MEM=ON \
+  -DENABLE_TTH=ON
 
 echo "calling make"
 make -j4

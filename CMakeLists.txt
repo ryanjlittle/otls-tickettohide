@@ -31,17 +31,20 @@ ELSE()
   include_directories(${EMP-ZK_INCLUDE_DIRS})
 ENDIF()
 
-include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+set(OTLS_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src)
+set(TTH_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/tickettohide)
+
+include_directories(${OTLS_SOURCE_DIR})
 set(sources
-  backend/switch.cpp
-  cipher/utils.cpp
+  src/backend/switch.cpp
+  src/cipher/utils.cpp
 )
 option(LOAD_CIRCUIT_FROM_MEM "" OFF)
 IF(LOAD_CIRCUIT_FROM_MEM)
   add_definitions(-DLOAD_CIRCUIT_FROM_MEM=1)
   list(APPEND sources
-    cipher/circuit_files/aes128_ks_data.cpp
-    cipher/circuit_files/aes128_with_ks_data.cpp
+    src/cipher/circuit_files/aes128_ks_data.cpp
+    src/cipher/circuit_files/aes128_with_ks_data.cpp
   )
 ENDIF()
 option(USE_PRIMUS_EMP "use primus emp" OFF)
@@ -59,10 +62,26 @@ target_link_libraries(otls ${EMP-TOOL_LIBRARIES} ${EMP-ZK_LIBRARIES} dl)
 install(FILES cmake/otls-config.cmake DESTINATION cmake/)
 install(TARGETS otls DESTINATION lib)
 
-install(DIRECTORY backend cipher protocol DESTINATION include)
+install(DIRECTORY src/backend src/cipher src/protocol DESTINATION include)
 
 option(ENABLE_OTLS_TEST "otls test" ON)
 IF(ENABLE_OTLS_TEST)
   ENABLE_TESTING()
-  ADD_SUBDIRECTORY(test)
+  ADD_SUBDIRECTORY(src/test)
+ENDIF()
+
+option(ENABLE_TTH "ticket to hide" ON)
+IF(ENABLE_TTH)
+  add_executable(tickettohide
+    tickettohide/tickettohide.cpp
+  )
+  target_link_libraries(tickettohide PRIVATE otls)
+  add_executable(tickettohide_test
+    tickettohide/tickettohide_test.cpp
+  )
+  target_link_libraries(tickettohide_test PRIVATE otls)
+  add_executable(hmac_test
+    tickettohide/hmac_test.cpp
+  )
+  target_link_libraries(hmac_test PRIVATE otls)
 ENDIF()
