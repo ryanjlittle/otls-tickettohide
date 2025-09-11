@@ -183,6 +183,8 @@ class HandShake {
                                    size_t rc_len,
                                    const unsigned char* rs,
                                    size_t rs_len) {
+
+        std::cout << "pms: " << BN_bn2hex(pms) << std::endl;
         size_t len = BN_num_bytes(q);
         size_t pms_len = BN_num_bytes(pms);
         unsigned char* buf = new unsigned char[len];
@@ -226,6 +228,9 @@ class HandShake {
     inline void compute_extended_master_key(const BIGNUM* pms,
                                             const unsigned char* session_hash,
                                             size_t hash_len) {
+        std::cout << "pms: " << BN_bn2hex(pms) << std::endl;
+
+
         size_t len = BN_num_bytes(q);
         size_t pms_len = BN_num_bytes(pms);
         unsigned char* buf = new unsigned char[len];

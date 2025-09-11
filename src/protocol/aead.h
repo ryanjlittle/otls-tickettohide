@@ -184,6 +184,8 @@ class AEAD {
                         size_t iv_len,
                         int party,
                         bool sec_type = false) {
+
+
         // u = 128 * ceil(msg_len/128) - 8*msg_len
         size_t u = 128 * ((msg_len * 8 + 128 - 1) / 128) - msg_len * 8;
 
@@ -191,6 +193,7 @@ class AEAD {
 
         set_nonce(iv, iv_len);
         Integer Z;
+
         gctr(Z, 1 + ctr_len);
         Integer Z0;
         Z0.bits.insert(Z0.bits.end(), Z.bits.end() - 128, Z.bits.end());

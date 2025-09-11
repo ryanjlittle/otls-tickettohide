@@ -38,7 +38,10 @@ cmake ${repo_dir} \
   -DCMAKE_INSTALL_PREFIX=${installdir} \
   -DCMAKE_PREFIX_PATH=${primus_emp_installdir} \
   -DCMAKE_BUILD_TYPE=${build_type}
+
+echo "calling make"
 make -j4
+echo "calling make install"
 make install
 
 cd ${curdir}
