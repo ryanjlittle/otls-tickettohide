@@ -1,21 +1,11 @@
+#include "aead_13.h"
 #include "backend/backend.h"
 #include "emp-tool/emp-tool.h"
 #include "emp-zk/emp-zk.h"
-#include "protocol/aead.h"
+#include "handshake_13.h"
 #include "protocol/com_conv.h"
 #include "protocol/post_record.h"
-#include "protocol/record.h"
-#include "handshake_13.h"
 #include <iostream>
-#if defined(__linux__)
-#include <sys/time.h>
-#include <sys/resource.h>
-#elif defined(__APPLE__)
-#include <unistd.h>
-#include <sys/resource.h>
-#include <mach/mach.h>
-#endif
-#include "test/io_utils.h"
 
 using namespace std;
 using namespace emp;
@@ -30,62 +20,207 @@ void full_protocol(IO* io, IO* io_opt, COT<IO>* cot, int num_servers, int party)
 
     Handshake_13<NetIO>* hs = new Handshake_13<NetIO>(io, io_opt, cot, num_servers);
 
-    unsigned char* rc = new unsigned char[32];
-    unsigned char* rs = new unsigned char[32];
+    /* =========================================================================
+    *  MPC CHTS/SHTS computation
+    *
+    *  Prover inputs index of real server and transcript hash, verifier inputs a
+    *  list of handshake secrets. Under MPC, they compute the CHTS and SHTS
+    *  corresponding to the prover's selected server. These values are revealed
+    *  to the prover, as well as all the other verifier's input secrets that
+    *  were unused.
+    * ======================================================================= */
 
-    unsigned char* ufinc = new unsigned char[finished_msg_length];
-    unsigned char* ufins = new unsigned char[finished_msg_length];
-
-    unsigned char* tau_c = new unsigned char[32];
-    unsigned char* tau_s = new unsigned char[32];
-
-    unsigned char* cmsg = new unsigned char[QUERY_BYTE_LEN];
-    unsigned char* smsg = new unsigned char[RESPONSE_BYTE_LEN];
-
-    memset(rc, 0x11, 32);
-    memset(rs, 0x22, 32);
-    memset(tau_c, 0x33, 32);
-    memset(tau_s, 0x44, 32);
-    memset(cmsg, 0x55, QUERY_BYTE_LEN);
-    memset(smsg, 0x66, QUERY_BYTE_LEN);
-
-    unsigned char aad[] = {0xfe, 0xed, 0xfa, 0xce, 0xde, 0xad, 0xbe, 0xef, 0xfe, 0xed,
-                           0xfa, 0xce, 0xde, 0xad, 0xbe, 0xef, 0xab, 0xad, 0xda, 0xd2};
-
-    size_t aad_len = sizeof(aad);
-    auto start = emp::clock_start();
-
-    if (party == BOB) {
-        vector<BIGNUM*> hs_secs;
-        string hex_str;
-        hs_secs.reserve(num_servers);
-        for (int i = 0; i < num_servers; i++) {
-            cin >> hex_str;
-            BIGNUM* hs_sec = BN_new();
-            BN_hex2bn(&hs_sec, hex_str.c_str());
-            hs_secs.push_back(hs_sec);
-        }
-        // TODO: need to free these values at some point
-        // for (BIGNUM* hs_sec : hs_secs) {
-        //     BN_free(hs_sec);
-        // }
-
-        hs->set_verifier_handshake_secrets(hs_secs);
-    } else {
+    if (party == PROVER) {
+        // take in inputs
         int index;
         cin >> index;
         if (index < 0 || index >= num_servers) {
             throw runtime_error("Invalid server index");
         }
-        string hex_str;
-        cin >> hex_str;
-        BIGNUM* hash_val = BN_new();
-        BN_hex2bn(&hash_val, hex_str.c_str());
+        string hash_hex;
+        cin >> hash_hex;
+        if (hash_hex.size() != HASH_LEN*2) {
+            throw runtime_error("Invalid hash length");
+        }
+        unsigned char* hash_bytes = new unsigned char[HASH_LEN];
+        hex_str_to_bytes(hash_bytes, hash_hex);
+        hs->set_prover_handshake_secrets(index, hash_bytes);
+        delete[] hash_bytes;
+    } else if (party == VERIFIER) {
+        vector<const unsigned char*> hs_secs;
+        string hs_sec_hex;
+        hs_secs.reserve(num_servers);
+        for (int i = 0; i < num_servers; i++) {
+            cin >> hs_sec_hex;
+            if (hs_sec_hex.size() != HASH_LEN*2) {
+                throw runtime_error("Invalid secret length");
+            }
+            unsigned char* hs_sec_bytes = new unsigned char[HASH_LEN];
+            hex_str_to_bytes(hs_sec_bytes, hs_sec_hex);
+            hs_secs.push_back(hs_sec_bytes);
+            //delete[] hs_sec_bytes;
 
-        hs->set_prover_handshake_secrets(index, hash_val);
+            // cin >> hs_sec_hex;
+            // hs_secs.push_back((unsigned char*) hs_sec_hex.data());
+        }
+        hs->set_verifier_handshake_secrets(hs_secs);
+        for (auto sec : hs_secs) {
+            delete[] sec;
+        }
     }
 
-    hs->compute_handshake_secrets();
+    hs->compute_handshake_secrets(party);
+
+    // write prover's outputs to console
+    if (party == PROVER) {
+        print_bin_str_as_hex_reversed(hs->chts_revealed);
+        print_bin_str_as_hex_reversed(hs->shts_revealed);
+        for (string dummy_sec : hs->dummy_hs_secs_revealed) {
+            print_bin_str_as_hex_reversed(dummy_sec);
+        }
+    }
+
+    /* ========================================================================
+    *  MPC key derivation
+    *
+    *  Prover inputs transcript hash, verifier inputs a list of master secrets.
+    *  Under MPC, they compute the client and server AES keys and IVs
+    *  corresponding to the prover's selected server (which they inputted in the
+    *  prior stage). The keys are kept secret, the IVs are revealed to both
+    *  parties. Additionally, the prover learns the all the verifier's unused
+    *  master secrets.
+    * ======================================================================= */
+
+    // take in inputs
+    if (party == PROVER) {
+        string hash_hex;
+        cin >> hash_hex;
+        if (hash_hex.size() != HASH_LEN*2) {
+            throw runtime_error("Invalid hash length");
+        }
+        unsigned char* hash_bytes = new unsigned char[HASH_LEN];
+        hex_str_to_bytes(hash_bytes, hash_hex);
+        hs->set_prover_application_secrets(hash_bytes);
+        delete[] hash_bytes;
+        // string hash_hex;
+        // cin >> hash_hex;
+        // hs->set_prover_application_secrets((unsigned char*) hash_hex.data());
+    } else if (party == VERIFIER) {
+        vector<const unsigned char*> master_secs;
+        string msec_hex;
+        master_secs.reserve(num_servers);
+        for (int i = 0; i < num_servers; i++) {
+            cin >> msec_hex;
+            if (msec_hex.size() != HASH_LEN*2) {
+                throw runtime_error("Invalid secret length");
+            }
+            unsigned char* msec_bytes = new unsigned char[HASH_LEN];
+            hex_str_to_bytes(msec_bytes, msec_hex);
+            master_secs.push_back(msec_bytes);
+            //delete[] msec_bytes;
+
+            // cin >> msec_hex;
+            // master_secs.push_back((unsigned char*) msec_hex.data());
+        }
+        hs->set_verifier_application_secrets(master_secs);
+        for (auto sec : master_secs) {
+            delete[] sec;
+        }
+    }
+
+    hs->compute_application_keys(party);
+
+    // write prover's outputs to console
+    if (party == PROVER) {
+        for (string dummy_sec : hs->dummy_master_secs_revealed) {
+            print_bin_str_as_hex_reversed(dummy_sec);
+        }
+    }
+
+    /* ========================================================================
+    *  MPC AES-GCM encryption
+    *
+    *  Prover inputs a plaintext and additional data for an AES-GCM encryption.
+    *  Using the client key and IV computed in the previous stage, computes the
+    *  ciphertext and authentication tag under MPC. Both are revealed to (only)
+    *  the prover.
+    * ======================================================================= */
+
+    uint64_t ptext_len, adata_len;
+    unsigned char* ptext;
+    unsigned char* adata;
+
+    if (party == PROVER) {
+        // take in inputs
+        string ptext_hex, adata_hex;
+        cin >> ptext_hex;
+        cin >> adata_hex;
+
+        if (ptext_hex.size() % 2 != 0) {
+            throw runtime_error("Invalid plaintext");
+        }
+        if (adata_hex.size() % 2 != 0) {
+            throw runtime_error("Invalid additional data");
+        }
+        ptext_len = ptext_hex.size() / 2;
+        adata_len = adata_hex.size() / 2;
+        ptext = new unsigned char[ptext_len];
+        adata = new unsigned char[adata_len];
+        hex_str_to_bytes(ptext, ptext_hex);
+        hex_str_to_bytes(adata, adata_hex);
+        // memcpy(ptext, ptext_hex.data(), ptext_len);
+        // memcpy(adata, adata_hex.data(), adata_len);
+
+        // send lengths to verifier
+        io->send_data(&ptext_len, sizeof(uint64_t));
+        io->send_data(&adata_len, sizeof(uint64_t));
+    } else if (party == VERIFIER) {
+        // receive lengths from prover
+        io->recv_data(&ptext_len, sizeof(uint64_t));
+        io->recv_data(&adata_len, sizeof(uint64_t));
+
+        ptext = new unsigned char[ptext_len];
+        adata = new unsigned char[adata_len];
+        memset(ptext, 0, ptext_len);
+        memset(adata, 0, adata_len);
+    }
+
+    AEAD_13<IO> aead_c = AEAD_13<IO>(io,
+                                     io_opt,
+                                     cot,
+                                     hs->client_write_key,
+                                     hs->client_write_iv,
+                                     party);
+
+    unsigned char* ctxt = new unsigned char[ptext_len];
+    unsigned char* tag = new unsigned char[TAG_LEN];
+
+    aead_c.encrypt(io,
+                   ctxt,
+                   tag,
+                   ptext,
+                   ptext_len,
+                   adata,
+                   adata_len);
+
+    // write tag and ciphertext to prover's console
+    if (party == PROVER) {
+        unsigned char* ctxt_and_tag = new unsigned char[ptext_len + TAG_LEN];
+        memcpy(ctxt_and_tag, ctxt, ptext_len);
+        memcpy(ctxt_and_tag + ptext_len, tag, TAG_LEN);
+        print_as_hex(ctxt_and_tag, ptext_len + TAG_LEN);
+        delete[] ctxt_and_tag;
+    }
+
+    // TODO: post-record
+
+
+    delete hs;
+    delete[] ptext;
+    delete[] adata;
+    delete[] ctxt;
+    delete[] tag;
+
     //
     // BIGNUM* pms = BN_new();
     // BIGNUM* full_pms = BN_new();
@@ -170,18 +305,12 @@ void full_protocol(IO* io, IO* io_opt, COT<IO>* cot, int num_servers, int party)
     // BN_free(full_pms);
     // EC_POINT_free(Ts);
 
-    delete hs;
-    delete[] rc;
-    delete[] rs;
-    delete[] ufinc;
-    delete[] ufins;
-    delete[] tau_c;
-    delete[] tau_s;
+    //delete hs;
     // delete[] finc_ctxt;
     // delete[] finc_tag;
     // delete[] msg;
-    delete[] cmsg;
-    delete[] smsg;
+    // delete[] cmsg;
+    // delete[] smsg;
 
     // delete aead_c;
     // delete aead_s;
@@ -197,57 +326,27 @@ inline void parse_args(const char *const *arg, int *party, int *servers, int *po
 
 
 int main(int argc, char** argv) {
-    std::cout << "THIS IS RUNNING TICKET TO HIDE PROGRAM :)" << std::endl;
     int port, party, num_servers;
     parse_args(argv, &party, &num_servers, &port);
 
-    NetIO* io_opt = new NetIO(party == ALICE ? nullptr : "127.0.0.1", port + threads);
+    NetIO* io_opt = new NetIO(party == PROVER ? nullptr : "127.0.0.1", port + threads);
 
     NetIO* io[threads];
     BoolIO<NetIO>* ios[threads];
     for (int i = 0; i < threads; i++) {
-        io[i] = new NetIO(party == ALICE ? nullptr : "127.0.0.1", port + i);
-        ios[i] = new BoolIO<NetIO>(io[i], party == ALICE);
+        io[i] = new NetIO(party == PROVER ? nullptr : "127.0.0.1", port + i);
+        ios[i] = new BoolIO<NetIO>(io[i], party == PROVER);
     }
 
-    auto start = emp::clock_start();
     setup_protocol<NetIO>(io[0], ios, threads, party);
-    cout << "setup time: " << emp::time_from(start) << " us" << endl;
+
     auto prot = (PrimusParty<NetIO>*)(ProtocolExecution::prot_exec);
     IKNP<NetIO>* cot = prot->ot;
     full_protocol<NetIO>(io[0], io_opt, cot, num_servers, party);
-    cout << "total time: " << emp::time_from(start) << " us" << endl;
 
-    cout << "gc AND gates: " << dec << gc_circ_buf->num_and() << endl;
-    cout << "zk AND gates: " << dec << zk_circ_buf->num_and() << endl;
     finalize_protocol();
 
     bool cheat = CheatRecord::cheated();
     if (cheat)
         error("cheat!\n");
-
-#if defined(__linux__)
-    struct rusage rusage;
-    if (!getrusage(RUSAGE_SELF, &rusage))
-        std::cout << "[Linux]Peak resident set size: " << (size_t)rusage.ru_maxrss
-                  << std::endl;
-    else
-        std::cout << "[Linux]Query RSS failed" << std::endl;
-#elif defined(__APPLE__)
-    struct mach_task_basic_info info;
-    mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
-    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info, &count) ==
-        KERN_SUCCESS)
-        std::cout << "[Mac]Peak resident set size: " << (size_t)info.resident_size_max
-                  << std::endl;
-    else
-        std::cout << "[Mac]Query RSS failed" << std::endl;
-#endif
-    cout << "comm: " << (getComm(io, threads, io_opt) * 1.0) / 1024 << " KBytes" << endl;
-    delete io_opt;
-    for (int i = 0; i < threads; i++) {
-        delete ios[i];
-        delete io[i];
-    }
-    return 0;
 }

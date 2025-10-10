@@ -76,12 +76,9 @@ IF(ENABLE_TTH)
     tickettohide/tickettohide.cpp
   )
   target_link_libraries(tickettohide PRIVATE otls)
-  add_executable(tickettohide_test
-    tickettohide/tickettohide_test.cpp
-  )
-  target_link_libraries(tickettohide_test PRIVATE otls)
-  add_executable(hmac_test
-    tickettohide/hmac_test.cpp
-  )
-  target_link_libraries(hmac_test PRIVATE otls)
+  option(ENABLE_TTH_TEST "tth test" ON)
+  IF(ENABLE_TTH_TEST)
+    ENABLE_TESTING()
+    ADD_SUBDIRECTORY(tickettohide/test)
+  ENDIF()
 ENDIF()
