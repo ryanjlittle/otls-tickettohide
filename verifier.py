@@ -1,9 +1,9 @@
 from enum import IntEnum
 
+from mpc_tls import VerifierMPC
 from proof_common import VerifierError
 from proof_connections import ProverConnection
-from proof_spec import TicketsVerifierMsg, KexSharesProverMsg, \
-    HandshakeSecretsVerifierMsg, MasterSecretsVerifierMsg, CommitmentsProverMsg, AppKeySharesVerifierMsg
+from proof_spec import TicketsVerifierMsg, KexSharesProverMsg
 from prover_crypto import DEFAULT_PROVER_CLIENT_OPTIONS
 from tls13_spec import ClientOptions
 from tls_common import *
@@ -16,12 +16,11 @@ class VerifierState(IntEnum):
     GET_TICKETS       = 1
     CONNECT           = 2
     WAIT_KEX_SHARES   = 3
-    WAIT_2PC_HS_HKDF  = 4
-    WAIT_2PC_APP_HKDF = 5
-    WAIT_2PC_ENC      = 6
-    WAIT_COMMITMENT   = 7
-    WAIT_PROOF        = 8
-    DONE              = 9
+    MPC_HS_HKDF       = 4
+    MPC_APP_HKDF      = 5
+    MPC_ENC           = 6
+    FINALIZE          = 7
+    DONE              = 8
 
     def __str__(self):
         return self.name
@@ -37,6 +36,7 @@ class Verifier:
     servers: list[ServerID]
     prover_conn: ProverConnection
     crypto_manager: VerifierCryptoManager
+    mpc_manager: VerifierMPC
     options: ClientOptions = DEFAULT_PROVER_CLIENT_OPTIONS
     state: VerifierState = VerifierState.INIT
     rseed: int|None = None
@@ -45,12 +45,14 @@ class Verifier:
                  servers: list[ServerID],
                  prover_host: str = 'localhost',
                  prover_port: int = 9000,
+                 mpc_port: int = 9001,
                  options: ClientOptions = DEFAULT_PROVER_CLIENT_OPTIONS,
                  rseed: int|None = None
         ) -> None:
         self.servers = servers
         self.prover_conn = ProverConnection(prover_host, prover_port)
         self.crypto_manager = VerifierCryptoManager(servers, options, rseed)
+        self.mpc_manager = VerifierMPC(len(servers), mpc_port)
         self.options = options
         self.state = VerifierState.INIT
 
@@ -72,11 +74,10 @@ class Verifier:
             VerifierState.GET_TICKETS       : self.get_tickets,
             VerifierState.CONNECT           : self.connect,
             VerifierState.WAIT_KEX_SHARES   : self.process_kex_shares,
-            VerifierState.WAIT_2PC_HS_HKDF  : self.twopc_handshake_hkdf,
-            VerifierState.WAIT_2PC_APP_HKDF : self.twopc_application_hkdf,
-            VerifierState.WAIT_2PC_ENC      : self.twopc_encryption,
-            VerifierState.WAIT_COMMITMENT   : self.process_commitment,
-            VerifierState.WAIT_PROOF        : self.process_proof
+            VerifierState.MPC_HS_HKDF       : self.twopc_handshake_hkdf,
+            VerifierState.MPC_APP_HKDF      : self.twopc_application_hkdf,
+            VerifierState.MPC_ENC           : self.twopc_encryption,
+            VerifierState.FINALIZE          : self.finalize,
         }
 
     def run(self):
@@ -87,7 +88,7 @@ class Verifier:
 
     def preprocess(self) -> None:
         assert self.state == VerifierState.INIT
-        # TODO: we'll do MPC preprocessing here later
+        self.mpc_manager.begin()
         self.increment_state()
 
     def get_tickets(self) -> None:
@@ -122,45 +123,41 @@ class Verifier:
         self.increment_state()
 
     def twopc_handshake_hkdf(self) -> None:
-        assert self.state == VerifierState.WAIT_2PC_HS_HKDF
-        # TODO: replace this with actual MPC
-        hs_secrets = self.crypto_manager.handshake_secrets
-        msg = HandshakeSecretsVerifierMsg.create(hs_secrets)
-        self.prover_conn.send_msg(msg)
+        assert self.state == VerifierState.MPC_HS_HKDF
+
+        self.mpc_manager.wait_until_connected()
+        self.mpc_manager.compute_handshake_secrets(self.crypto_manager.handshake_secrets)
+
+        # Trusted party version
+
+        #hs_secrets = self.crypto_manager.handshake_secrets
+        #msg = HandshakeSecretsVerifierMsg.create(hs_secrets)
+        #self.prover_conn.send_msg(msg)
         self.increment_state()
 
     def twopc_application_hkdf(self) -> None:
-        assert self.state == VerifierState.WAIT_2PC_APP_HKDF
-        # TODO: replace this with actual MPC
-        master_secrets = self.crypto_manager.master_secrets
-        msg = MasterSecretsVerifierMsg.create(master_secrets)
-        self.prover_conn.send_msg(msg)
+        assert self.state == VerifierState.MPC_APP_HKDF
+
+        self.mpc_manager.compute_master_secrets(self.crypto_manager.master_secrets)
+
+        # Trusted party version
+
+        # master_secrets = self.crypto_manager.master_secrets
+        # msg = MasterSecretsVerifierMsg.create(master_secrets)
+        # self.prover_conn.send_msg(msg)
+
         self.increment_state()
 
     def twopc_encryption(self) -> None:
-        assert self.state == VerifierState.WAIT_2PC_ENC
-        # TODO: replace this with actual MPC
-        self.increment_state()
+        assert self.state == VerifierState.MPC_ENC
 
-    def process_commitment(self) -> None:
-        assert self.state == VerifierState.WAIT_COMMITMENT
-        msg = self.prover_conn.recv_msg()
-        if not isinstance(msg, CommitmentsProverMsg):
-            raise VerifierError(f'received unexpected message type: {msg.typ}')
-
-        self.crypto_manager.query_commitment = msg.data.query_commitment
-        self.crypto_manager.response_commitments = [commit.uncreate() for commit in msg.data.response_commitments]
-
-        # TODO: replace with real shares generated via MPC
-        client_key_share = b'\x00'*32
-        server_key_share = b'\x00'*32
-
-        msg = AppKeySharesVerifierMsg.create(client_key_share=client_key_share, server_key_share=server_key_share)
-        self.prover_conn.send_msg(msg)
+        self.mpc_manager.compute_encryption()
 
         self.increment_state()
 
-    def process_proof(self) -> None:
-        assert self.state == VerifierState.WAIT_PROOF
-        # TODO
+    def finalize(self) -> None:
+        assert self.state == VerifierState.FINALIZE
+        exit_code = self.mpc_manager.finish()
+        if exit_code != 0:
+            raise VerifierError(f'Low-level verifier failed with exit code {exit_code}')
         self.increment_state()

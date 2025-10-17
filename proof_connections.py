@@ -145,6 +145,7 @@ class VerifierConnection(AbstractConnection):
 
     def create_socket(self) -> None:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        #self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
     @override
     def close(self) -> None:
@@ -170,94 +171,3 @@ class VerifierConnection(AbstractConnection):
         self.rfile = self.conn.makefile('rb')
         self.reader = VerifierMsgReader(self.rfile)
         self.writer = ProverMsgWriter(self.wfile)
-
-
-#     message = self._reader.recv_msg()
-#     if not self._connected:
-#         self._connected = True
-#     return message
-
-    # def accept(self):
-    #     if not self._bound:
-    #         raise ProverError('need to bind connection before accepting')
-    #     self.sock.listen(1)
-    #     logger.info('prover listening for verifier')
-    #     self._listening = True
-    #     self._sock, self._verifier_port = self.sock.accept()
-    #     logger.info('connected to verifier')
-    #     self._write_file = self._sock.makefile('wb')
-    #     self._read_file = self._sock.makefile('rb')
-    #     self._reader = VerifierMsgReader(self._read_file)
-    #     self._writer = ProverMsgWriter(self._write_file)
-
-    # def send_msg(self, msg):
-    #     if not self._connected:
-    #         raise VerifierError("can't send application data yet")
-    #     self._writer.send_msg(msg)
-    #
-    # def recv_msg(self):
-    #     message = self._reader.recv_msg()
-    #     if not self._connected:
-    #         self._connected = True
-    #     return message
-    
-# class ProverRecordReader(RecordReader):
-#     """A record reader that can buffer encrypted records without immediately decrypting them"""
-#
-#     def __init__(self, file, transcript, app_data_buffer):
-#         super().__init__(file, transcript, app_data_buffer)
-#         self.buffered_records = []
-#
-#     def buffer_encrypted_record(self):
-#         logger.info('trying to fetch an encrypted record from the incoming stream')
-#         try:
-#             record = Record.unpack_from(self.file)
-#         except (UnpackError, EOFError) as e:
-#             raise TlsError("error unpacking record from server") from e
-#
-#         (typ,vers), payload = record
-#         logger.info(f'Fetched a length-{len(payload)} record of type {typ}')
-#         self.buffered_records.append(record)
-#
-#     def buffer_encrypted_records(self, num_records):
-#         for _ in range(num_records):
-#             self.buffer_encrypted_record()
-#
-#     def process_buffered_records(self):
-#         while len(self.buffered_records) > 0:
-#             record = self.buffered_records[0]
-#             typ, payload = self._unwrap_record(record)
-#             logger.info(f'decrypting buffered record of length {len(payload)}')
-#
-#             match typ:
-#                 case ContentType.CHANGE_CIPHER_SPEC:
-#                     pass  # ignore these ones
-#                 case ContentType.ALERT:
-#                     raise TlsError(f"Received ALERT: {payload}")
-#                 case ContentType.HANDSHAKE:
-#                     try:
-#                         # If we can't decrypt the message, leave it in the buffer and try later
-#                         self.hs_buffer.add(payload)
-#                     except ProverError:
-#                         break
-#                 case ContentType.APPLICATION_DATA:
-#                     self._app_data_buffer.add(payload)
-#                 case _:
-#                     raise TlsError(f"Unexpected message type {typ} received")
-#
-#             self.buffered_records.pop(0)
-#
-#     def get_next_record(self):
-#         if len(self.buffered_records) > 0:
-#             logger.warning('attempting to get new encrypted record when buffer is not empty')
-#         return super().get_next_record()
-#
-# def obtain_ticket(server_id):
-#     host = server_id.hostname
-#     port = server_id.port
-#
-#     with connect_client(host, port) as client:
-#         client._rreader.fetch() # Fetch first ticket
-#         client.send(b'x') # Just a dummy message
-#
-#     return client.tickets

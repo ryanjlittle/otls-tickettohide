@@ -14,11 +14,7 @@ specs: dict[str, GenSpec] = kwdict(
     ),
 
     ProverMsgType = NamedConst(8)(
-        KEX_SHARES  = 1,
-        COMMITMENTS = 2,
-        PROOF       = 3,
-        KEY_SHARE_TEST1 = 4,
-        KEY_SHARE_TEST2 = 5,
+        KEX_SHARES  = 1
     ),
 
     VerifierMsgType = NamedConst(8)(
@@ -34,16 +30,6 @@ specs: dict[str, GenSpec] = kwdict(
                 group=NamedGroup,
                 pubkey=Bounded(16, Raw)
             )))),
-        COMMITMENTS = Struct(
-            query_commitment = Bounded(8, Raw),
-            response_commitments = Bounded(16,Sequence(Bounded(8, Raw)))
-        ),
-        PROOF = Struct(proof = Bounded(16, Raw)),
-        KEY_SHARE_TEST1 = Struct(share = KeyShareEntry),
-        KEY_SHARE_TEST2 = Struct(
-            group = NamedGroup,
-            pubkey = Bounded(16, Raw)
-        ),
     ),
 
     VerifierMsg = Select('VerifierMsgType', 16)(

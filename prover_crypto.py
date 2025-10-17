@@ -371,11 +371,11 @@ class TwoPCClient(ProverClient):
             record = ipt.to_record(response.version)
             logger.info(f'Decrypted record to length-{len(record.payload)} of type {record.typ} [2PC SERVER]')
             self.handshake.rreader.transcript.add(
-                raw = response.pack(), # TODO: not sure if this is the right thing to pass as raw
+                raw = response.pack(),
                 record = record,
                 sent = False
             )
-            self.handshake.rreader.app_data_buffer.add(response.payload) # TODO: might be wrong
+            self.handshake.rreader.app_data_buffer.add(response.payload)
 
     def send_raw(self, raw: bytes) -> None:
         if not self.handshake.can_send or self.handshake.rwriter is None:
@@ -541,10 +541,8 @@ class ProverCryptoManager:
         # this ensures any exception encountered in a thread will be raised
         [f.result() for f in futures]
 
-    def reconstruct_application_keys(self, ver_ck_share: bytes, ver_sk_share: bytes) -> None:
-        client_key = bytes(a ^ b for a, b in zip(ver_ck_share, self.client_key_share))
-        server_key = bytes(a ^ b for a, b in zip(ver_sk_share, self.server_key_share))
-        self.twopc_client.set_application_keys(client_key, server_key, self.client_key_iv, self.server_key_iv)
+    def set_application_keys(self, client_key: bytes, client_iv: bytes, server_key: bytes, server_iv: bytes) -> None:
+        self.twopc_client.set_application_keys(client_key, server_key, client_iv, server_iv)
 
     def decrypt_real_server_responses(self) -> None:
         self.twopc_client.decrypt_server_responses()

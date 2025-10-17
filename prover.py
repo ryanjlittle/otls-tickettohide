@@ -1,10 +1,9 @@
 from enum import IntEnum
 
-from mpc_tls import HandshakeSecretTrustedParty, MasterSecretTrustedParty, EncryptionTrustedParty
+from mpc_tls import ProverMPC
 from proof_common import *
 from proof_connections import VerifierConnection
-from proof_spec import TicketsVerifierMsg, KexSharesProverMsg, HandshakeSecretsVerifierMsg, MasterSecretsVerifierMsg, \
-    CommitmentsProverMsg, AppKeySharesVerifierMsg
+from proof_spec import TicketsVerifierMsg, KexSharesProverMsg
 from prover_crypto import ProverSecrets, ProverCryptoManager
 from tls13_spec import ContentType, RecordHeader
 from tls_common import *
@@ -18,9 +17,9 @@ class ProverState(IntEnum):
     GET_ECH           = 1
     WAIT_TICKETS      = 2
     WAIT_SH           = 3
-    WAIT_2PC_HS_HKDF  = 4
-    WAIT_2PC_APP_HKDF = 5
-    WAIT_2PC_ENC      = 6
+    MPC_HS_HKDF       = 4
+    MPC_APP_HKDF      = 5
+    MPC_ENC           = 6
     WAIT_RESPONSE     = 7
     WAIT_KEY_SHARES   = 8
     DONE              = 9
@@ -40,6 +39,7 @@ class Prover:
     secrets: ProverSecrets
     verifier_connection: VerifierConnection
     crypto_manager: ProverCryptoManager
+    mpc_manager: ProverMPC
     state: ProverState = ProverState.INIT
     rseed: int|None = None
     verifier_client_key_share: bytes # TODO: this is for testing only
@@ -50,6 +50,7 @@ class Prover:
                  secrets: ProverSecrets,
                  hostname: str = 'localhost',
                  port: int = 9000,
+                 mpc_port: int = 9001,
                  rseed: int|None = None,
                  ) -> None:
         self.servers = servers
@@ -57,6 +58,7 @@ class Prover:
         self.rseed = rseed
         self.verifier_connection = VerifierConnection(hostname, port)
         self.crypto_manager = ProverCryptoManager(servers, secrets, rseed)
+        self.mpc_manager = ProverMPC(len(servers), mpc_port)
 
     def __enter__(self) -> Self:
         self.crypto_manager.create_sockets()
@@ -82,9 +84,9 @@ class Prover:
             ProverState.GET_ECH             : self.get_ech_configs,
             ProverState.WAIT_TICKETS        : self.process_tickets,
             ProverState.WAIT_SH             : self.process_sh,
-            ProverState.WAIT_2PC_HS_HKDF    : self.twopc_handshake_hkdf,
-            ProverState.WAIT_2PC_APP_HKDF   : self.twopc_application_hkdf,
-            ProverState.WAIT_2PC_ENC        : self.twopc_encryption,
+            ProverState.MPC_HS_HKDF    : self.twopc_handshake_hkdf,
+            ProverState.MPC_APP_HKDF   : self.twopc_application_hkdf,
+            ProverState.MPC_ENC        : self.twopc_encryption,
             ProverState.WAIT_RESPONSE       : self.process_response,
             ProverState.WAIT_KEY_SHARES     : self.process_key_share,
         }
@@ -98,7 +100,7 @@ class Prover:
 
     def preprocess(self) -> None:
         assert self.state == ProverState.INIT
-        # TODO: we'll do MPC preprocessing here later
+        self.mpc_manager.begin()
         self.increment_state()
 
     def get_ech_configs(self) -> None:
@@ -130,60 +132,70 @@ class Prover:
         self.increment_state()
 
     def twopc_handshake_hkdf(self) -> None:
-        assert self.state == ProverState.WAIT_2PC_HS_HKDF
-        # TODO: replace with actual MPC
-        msg = self.verifier_connection.recv_msg()
-        if not isinstance(msg, HandshakeSecretsVerifierMsg):
-            raise ProverError(f'received unexpected message type: {msg.typ}')
-        trusted_party = HandshakeSecretTrustedParty()
-        hash_val = self.crypto_manager.real_server_handshake_hash
-        trusted_party.prover_input = (self.secrets.index, hash_val)
-        trusted_party.verifier_input = list(msg.data.uncreate())
-        trusted_party.compute()
-        handshake_secs, chts, shts = trusted_party.prover_output
+        assert self.state == ProverState.MPC_HS_HKDF
 
-        self.crypto_manager.set_dummy_handshake_secets(handshake_secs)
-        self.crypto_manager.set_chts_shts(chts, shts)
+        self.mpc_manager.wait_until_connected()
+        transcript_hash = self.crypto_manager.real_server_handshake_hash
+        chts, shts, dummy_secrets = self.mpc_manager.compute_handshake_secrets(self.secrets.index, transcript_hash)
+
+
+        # Trusted party version
+
+        # msg = self.verifier_connection.recv_msg()
+        # if not isinstance(msg, HandshakeSecretsVerifierMsg):
+        #     raise ProverError(f'received unexpected message type: {msg.typ}')
+        # trusted_party = HandshakeSecretTrustedParty()
+        # hash_val = self.crypto_manager.real_server_handshake_hash
+        # trusted_party.prover_input = (self.secrets.index, hash_val)
+        # trusted_party.verifier_input = list(msg.data.uncreate())
+        # trusted_party.compute()
+        # dummy_secrets, chts, shts = trusted_party.prover_output
+
         logger.info('computed handshake keys')
 
+        self.crypto_manager.set_dummy_handshake_secets(dummy_secrets)
+        self.crypto_manager.set_chts_shts(chts, shts)
         self.crypto_manager.finish_handshakes()
         logger.info('handshake secrets verified')
 
         self.increment_state()
 
     def twopc_application_hkdf(self) -> None:
-        assert self.state == ProverState.WAIT_2PC_APP_HKDF
+        assert self.state == ProverState.MPC_APP_HKDF
 
-        # TODO: replace with actual MPC
-        msg = self.verifier_connection.recv_msg()
-        if not isinstance(msg, MasterSecretsVerifierMsg):
-            raise ProverError(f'received unexpected message type: {msg.typ}')
-        trusted_party = MasterSecretTrustedParty()
-        hash_val = self.crypto_manager.real_server_application_hash
-        trusted_party.prover_input = (self.secrets.index, hash_val)
-        trusted_party.verifier_input = list(msg.data.uncreate())
-        trusted_party.compute()
-        secrets, ck_share, civ, sk_share, siv = trusted_party.prover_output
-        self.crypto_manager.set_application_key_shares(ck_share, civ, sk_share, siv)
+        transcript_hash = self.crypto_manager.real_server_application_hash
+        dummy_secrets = self.mpc_manager.compute_master_secrets(transcript_hash)
+        # Trusted party version
 
-        # TODO: testing only, remove these
-        vck_share, civ1, vsk_share, siv1, commit1, commit2 = trusted_party.verifier_output
-        self.verifier_client_key_share = vck_share
-        self.verifier_server_key_share = vsk_share
+        # msg = self.verifier_connection.recv_msg()
+        # if not isinstance(msg, MasterSecretsVerifierMsg):
+        #     raise ProverError(f'received unexpected message type: {msg.typ}')
+        # trusted_party = MasterSecretTrustedParty()
+        # hash_val = self.crypto_manager.real_server_application_hash
+        # trusted_party.prover_input = (self.secrets.index, hash_val)
+        # trusted_party.verifier_input = list(msg.data.uncreate())
+        # trusted_party.compute()
+        # secrets, ck_share, civ, sk_share, siv = trusted_party.prover_output
+        # self.crypto_manager.set_application_key_shares(ck_share, civ, sk_share, siv)
+        #
+        # # TODO: testing only, remove these
+        # vck_share, civ1, vsk_share, siv1, commit1, commit2 = trusted_party.verifier_output
+        # self.verifier_client_key_share = vck_share
+        # self.verifier_server_key_share = vsk_share
 
         # check received master secrets against locally computed values
         computed_secrets = self.crypto_manager.dummy_master_secrets
-        for i, (received_sec, comptued_sec) in enumerate(zip(secrets, computed_secrets)):
+        for i, (received_sec, computed_sec) in enumerate(zip(dummy_secrets, computed_secrets)):
             if i == self.secrets.index:
                 continue
-            if received_sec != comptued_sec:
+            if received_sec != computed_sec:
                 raise ProverError('received master secret mismatch')
 
         logger.info('dummy master secrets verified')
         self.increment_state()
 
     def twopc_encryption(self) -> None:
-        assert self.state == ProverState.WAIT_2PC_ENC
+        assert self.state == ProverState.MPC_ENC
 
         # TODO: replace with actual MPC
         query = self.secrets.queries[self.secrets.index]
@@ -197,14 +209,19 @@ class Prover:
             version = DEFAULT_LEGACY_VERSION,
             size = get_cipher_alg(self.crypto_manager.ciphersuite).ctext_size(len(plaintext))
         ).pack()
-        trusted_party = EncryptionTrustedParty()
-        trusted_party.prover_input = (self.crypto_manager.client_key_share, plaintext)
-        trusted_party.verifier_input = self.verifier_client_key_share
-        trusted_party.public_input = (self.crypto_manager.client_key_iv, header)
-        trusted_party.compute()
-        ciphertext = trusted_party.prover_output
-        raw = header + ciphertext
 
+        ciphertext = self.mpc_manager.compute_encryption(plaintext, header)
+
+        # Trused party version
+
+        # trusted_party = EncryptionTrustedParty()
+        # trusted_party.prover_input = (self.crypto_manager.client_key_share, plaintext)
+        # trusted_party.verifier_input = self.verifier_client_key_share
+        # trusted_party.public_input = (self.crypto_manager.client_key_iv, header)
+        # trusted_party.compute()
+        # ciphertext = trusted_party.prover_output
+
+        raw = header + ciphertext
         self.crypto_manager.send_queries(raw)
         logger.info('sent queries to all servers')
         self.increment_state()
@@ -214,26 +231,28 @@ class Prover:
         self.crypto_manager.recv_responses()
         logger.info('received responses from all servers')
 
-        query_commitment = self.crypto_manager.query_commitment
-        response_commitments = self.crypto_manager.response_commitments
-
-        msg = CommitmentsProverMsg.create(query_commitment, response_commitments)
-        self.verifier_connection.send_msg(msg)
+        # query_commitment = self.crypto_manager.query_commitment
+        # response_commitments = self.crypto_manager.response_commitments
+        #
+        # msg = CommitmentsProverMsg.create(query_commitment, response_commitments)
+        # self.verifier_connection.send_msg(msg)
         self.increment_state()
 
     def process_key_share(self) -> None:
         assert self.state == ProverState.WAIT_KEY_SHARES
-        msg = self.verifier_connection.recv_msg()
-        if not isinstance(msg, AppKeySharesVerifierMsg):
-            raise ProverError(f'received unexpected message type: {msg.typ}')
+        # msg = self.verifier_connection.recv_msg()
+        # if not isinstance(msg, AppKeySharesVerifierMsg):
+        #     raise ProverError(f'received unexpected message type: {msg.typ}')
 
         #verifier_client_key_share = msg.data.client_key_share
         #verifier_server_key_share = msg.data.server_key_share
         # TODO: replace the shares with the real shares from the verifier's message (commented out above)
-        self.crypto_manager.reconstruct_application_keys(self.verifier_client_key_share, self.verifier_server_key_share)
+        # self.crypto_manager.reconstruct_application_keys(self.verifier_client_key_share, self.verifier_server_key_share)
+
+        client_key, client_iv, server_key, server_iv = self.mpc_manager.get_keys()
+        self.crypto_manager.set_application_keys(client_key, client_iv, server_key, server_iv)
         self.crypto_manager.decrypt_real_server_responses()
         logger.info('decryption of real server succeeded')
-        # TODO: remove
         for client in self.crypto_manager.clients:
             logger.info(f'record received from server {client.server.hostname}: {client.handshake.rreader.transcript.records[-1].record.payload}')
         self.increment_state()
