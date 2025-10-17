@@ -286,6 +286,7 @@ public:
         for (int i = 0; i < num_servers; i++) {
             dummy_hs_secs_revealed[i] = dummy_hs_secs[i].reveal<string>(PROVER);
         }
+        io->flush();
     }
 
     inline void compute_application_keys(int party) {
