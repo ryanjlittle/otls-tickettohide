@@ -122,7 +122,7 @@ public:
 
         // TODO: pass the right flags to use their optimization
         Integer* tmp = new Integer[hmac.DIGLEN];
-        hmac.opt_hmac_sha256(tmp, info, info_len, false, false);
+        hmac.opt_hmac_sha256(tmp, info, info_len, true, true);
         concat(result, tmp, hmac.DIGLEN);
         result.bits.erase(result.bits.begin(), result.bits.end() - out_length*8);
         delete[] tmp;

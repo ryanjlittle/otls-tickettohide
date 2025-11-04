@@ -198,7 +198,7 @@ public:
     inline void handshake_secret_setup_prover() {
         // receive internal HMAC hashes
         for (uint32_t* hash : hs_hmac_inner_hash_buf) {
-            for (int i = 0; i < HASH_LEN; i++) {
+            for (int i = 0; i < HASH_LEN/4; i++) {
                 io->recv_data(&hash[i], sizeof(uint32_t));
             }
         }
@@ -209,7 +209,7 @@ public:
     inline void handshake_secret_setup_verifier() {
         // send internal HMAC hashes in the clear to the prover
         for (uint32_t* hash : hs_hmac_inner_hash_buf) {
-            for (int i = 0; i < HASH_LEN; i++) {
+            for (int i = 0; i < HASH_LEN/4; i++) {
                 io->send_data(&hash[i], sizeof(uint32_t));
             }
         }
@@ -218,7 +218,7 @@ public:
     inline void application_secret_setup_prover() {
         // receive internal HMAC hashes
         for (uint32_t* hash : app_hmac_inner_hash_buf) {
-            for (int i = 0; i < HASH_LEN; i++) {
+            for (int i = 0; i < HASH_LEN/4; i++) {
                 io->recv_data(&hash[i], sizeof(uint32_t));
             }
         }
@@ -229,7 +229,7 @@ public:
     inline void application_secret_setup_verifier() {
         // send internal HMAC hashes in the clear to the prover
         for (uint32_t* hash : app_hmac_inner_hash_buf) {
-            for (int i = 0; i < HASH_LEN; i++) {
+            for (int i = 0; i < HASH_LEN/4; i++) {
                 io->send_data(&hash[i], sizeof(uint32_t));
             }
         }

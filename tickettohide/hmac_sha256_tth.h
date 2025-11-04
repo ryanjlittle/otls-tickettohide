@@ -90,18 +90,18 @@ class HMAC_SHA256_local : public HMAC_SHA256 {
     }
 
     inline void compute_inner_key_hash(uint32_t* hash_out) {
-        uint32_t digest[WORDLEN];
-        memcpy(digest, iv, WORDLEN);
+        uint32_t digest[8];
+        memcpy(digest, iv, 8);
         plain_chunk_compress(digest, i_key_pad_local);
-        memcpy(hash_out, digest, WORDLEN);
+        memcpy(hash_out, digest, 8);
     }
 
     inline void compute_outer_key_hash(uint32_t* hash_out) {
-        uint32_t digest[WORDLEN];
-        memcpy(digest, iv, WORDLEN);
+        uint32_t digest[8];
+        memcpy(digest, iv, 8);
         plain_chunk_compress(digest, o_key_pad_local);
-        memcpy(hash_out, digest, WORDLEN);
-        reverse(hash_out, hash_out + DIGLEN);
+        memcpy(hash_out, digest, 8);
+        reverse(hash_out, hash_out + 8);
     }
 
     inline void compute_internal_hash(uint32_t* hash_out, uint32_t* hash_in, string info) {

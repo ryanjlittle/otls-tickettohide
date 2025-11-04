@@ -13,7 +13,7 @@ using namespace emp;
 const size_t QUERY_BYTE_LEN = 2 * 1024;
 const size_t RESPONSE_BYTE_LEN = 2 * 1024;
 
-const int threads = 1;
+const int threads = 2;
 
 template <typename IO>
 void full_protocol(IO* io, IO* io_opt, COT<IO>* cot, int num_servers, int party) {
@@ -214,6 +214,17 @@ void full_protocol(IO* io, IO* io_opt, COT<IO>* cot, int num_servers, int party)
 
     // TODO: post-record
 
+    // reveal all keys to prover
+    string client_key = hs->client_write_key.reveal<string>(PROVER);
+    string client_iv = hs->client_write_iv.reveal<string>(PROVER);
+    string server_key = hs->server_write_key.reveal<string>(PROVER);
+    string server_iv = hs->server_write_iv.reveal<string>(PROVER);
+    if (party == PROVER) {
+        print_bin_str_as_hex_reversed(client_key);
+        print_bin_str_as_hex_reversed(client_iv);
+        print_bin_str_as_hex_reversed(server_key);
+        print_bin_str_as_hex_reversed(server_iv);
+    }
 
     delete hs;
     delete[] ptext;
@@ -338,15 +349,28 @@ int main(int argc, char** argv) {
         ios[i] = new BoolIO<NetIO>(io[i], party == PROVER);
     }
 
+    //auto start = emp::clock_start();
     setup_protocol<NetIO>(io[0], ios, threads, party);
 
     auto prot = (PrimusParty<NetIO>*)(ProtocolExecution::prot_exec);
     IKNP<NetIO>* cot = prot->ot;
     full_protocol<NetIO>(io[0], io_opt, cot, num_servers, party);
 
+
+    //cout << "total time: " << emp::time_from(start) << " us" << endl;
+    //cout << "gc AND gates: " << dec << gc_circ_buf->num_and() << endl;
+    //cout << "zk AND gates: " << dec << zk_circ_buf->num_and() << endl;
+
     finalize_protocol();
 
     bool cheat = CheatRecord::cheated();
     if (cheat)
         error("cheat!\n");
+
+    delete io_opt;
+    for (int i = 0; i < threads; i++) {
+        delete ios[i];
+        delete io[i];
+    }
+    return 0;
 }
