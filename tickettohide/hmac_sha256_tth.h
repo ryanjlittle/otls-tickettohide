@@ -19,7 +19,10 @@ class HMAC_SHA256_TTH : public HMAC_SHA256 {
       delete[] tmp;
     }
 
-    void hmac_sha256_tth_opt(Integer& res, Integer msg, Integer outer_key_hash) {
+    void hmac_sha256_tth_opt(
+        Integer& res,
+        Integer msg,
+        Integer outer_key_hash) {
       SHA256 sha;
 
       // prepend the input with zeros to the right length, since the prover_hash
@@ -91,16 +94,16 @@ class HMAC_SHA256_local : public HMAC_SHA256 {
 
     inline void compute_inner_key_hash(uint32_t* hash_out) {
         uint32_t digest[8];
-        memcpy(digest, iv, 8);
+        memcpy(digest, iv, WORDLEN);
         plain_chunk_compress(digest, i_key_pad_local);
-        memcpy(hash_out, digest, 8);
+        memcpy(hash_out, digest, WORDLEN);
     }
 
     inline void compute_outer_key_hash(uint32_t* hash_out) {
         uint32_t digest[8];
-        memcpy(digest, iv, 8);
+        memcpy(digest, iv, WORDLEN);
         plain_chunk_compress(digest, o_key_pad_local);
-        memcpy(hash_out, digest, 8);
+        memcpy(hash_out, digest, WORDLEN);
         reverse(hash_out, hash_out + 8);
     }
 

@@ -3,8 +3,9 @@
 #include "emp-tool/emp-tool.h"
 #include "emp-zk/emp-zk.h"
 #include "handshake_13.h"
+#include "post_record_tth.h"
 #include "protocol/com_conv.h"
-#include "protocol/post_record.h"
+
 #include <iostream>
 
 using namespace std;
@@ -13,7 +14,7 @@ using namespace emp;
 const size_t QUERY_BYTE_LEN = 2 * 1024;
 const size_t RESPONSE_BYTE_LEN = 2 * 1024;
 
-const int threads = 2;
+const int threads = 1;
 
 template <typename IO>
 void full_protocol(IO* io, IO* io_opt, COT<IO>* cot, int num_servers, int party) {
@@ -102,9 +103,6 @@ void full_protocol(IO* io, IO* io_opt, COT<IO>* cot, int num_servers, int party)
         hex_str_to_bytes(hash_bytes, hash_hex);
         hs->set_prover_application_secrets(hash_bytes);
         delete[] hash_bytes;
-        // string hash_hex;
-        // cin >> hash_hex;
-        // hs->set_prover_application_secrets((unsigned char*) hash_hex.data());
     } else if (party == VERIFIER) {
         vector<const unsigned char*> master_secs;
         string msec_hex;
@@ -117,10 +115,6 @@ void full_protocol(IO* io, IO* io_opt, COT<IO>* cot, int num_servers, int party)
             unsigned char* msec_bytes = new unsigned char[HASH_LEN];
             hex_str_to_bytes(msec_bytes, msec_hex);
             master_secs.push_back(msec_bytes);
-            //delete[] msec_bytes;
-
-            // cin >> msec_hex;
-            // master_secs.push_back((unsigned char*) msec_hex.data());
         }
         hs->set_verifier_application_secrets(master_secs);
         for (auto sec : master_secs) {
@@ -168,13 +162,12 @@ void full_protocol(IO* io, IO* io_opt, COT<IO>* cot, int num_servers, int party)
         adata = new unsigned char[adata_len];
         hex_str_to_bytes(ptext, ptext_hex);
         hex_str_to_bytes(adata, adata_hex);
-        // memcpy(ptext, ptext_hex.data(), ptext_len);
-        // memcpy(adata, adata_hex.data(), adata_len);
 
         // send lengths to verifier
         io->send_data(&ptext_len, sizeof(uint64_t));
         io->send_data(&adata_len, sizeof(uint64_t));
     } else if (party == VERIFIER) {
+
         // receive lengths from prover
         io->recv_data(&ptext_len, sizeof(uint64_t));
         io->recv_data(&adata_len, sizeof(uint64_t));
@@ -185,7 +178,7 @@ void full_protocol(IO* io, IO* io_opt, COT<IO>* cot, int num_servers, int party)
         memset(adata, 0, adata_len);
     }
 
-    AEAD_13<IO> aead_c = AEAD_13<IO>(io,
+    AEAD_13<IO>* aead_c = new AEAD_13<IO>(io,
                                      io_opt,
                                      cot,
                                      hs->client_write_key,
@@ -195,13 +188,13 @@ void full_protocol(IO* io, IO* io_opt, COT<IO>* cot, int num_servers, int party)
     unsigned char* ctxt = new unsigned char[ptext_len];
     unsigned char* tag = new unsigned char[TAG_LEN];
 
-    aead_c.encrypt(io,
-                   ctxt,
-                   tag,
-                   ptext,
-                   ptext_len,
-                   adata,
-                   adata_len);
+    aead_c->encrypt(io,
+                    ctxt,
+                    tag,
+                    ptext,
+                    ptext_len,
+                    adata,
+                    adata_len);
 
     // write tag and ciphertext to prover's console
     if (party == PROVER) {
@@ -212,9 +205,26 @@ void full_protocol(IO* io, IO* io_opt, COT<IO>* cot, int num_servers, int party)
         delete[] ctxt_and_tag;
     }
 
-    // TODO: post-record
+    /* ========================================================================
+    *  Proof of correct garbling
+    *
+    *  Prover uses an interactive ZK proof to convince the verifier they garbled
+    *  all circuits correctly.
+    * ======================================================================= */
 
-    // reveal all keys to prover
+    switch_to_zk();
+    PostRecordTTH<IO>* prd = new PostRecordTTH<IO>(io, hs, aead_c, num_servers, party);
+    Integer tag_z0;
+
+    prd->reveal_verifier_secrets();
+    prd->prove_and_check_chts_shts();
+    prd->prove_and_check_master_sec();
+    prd->prove_record_client(tag_z0, ctxt, ptext_len, hs->client_iv_bytes_revealed, IV_LEN);
+
+    sync_zk_gc<IO>();
+    switch_to_gc();
+
+    // Print opened keys to prover's terminal
     string client_key = hs->client_write_key.reveal<string>(PROVER);
     string client_iv = hs->client_write_iv.reveal<string>(PROVER);
     string server_key = hs->server_write_key.reveal<string>(PROVER);
@@ -227,106 +237,12 @@ void full_protocol(IO* io, IO* io_opt, COT<IO>* cot, int num_servers, int party)
     }
 
     delete hs;
+    delete aead_c;
+    delete prd;
     delete[] ptext;
     delete[] adata;
     delete[] ctxt;
     delete[] tag;
-
-    //
-    // BIGNUM* pms = BN_new();
-    // BIGNUM* full_pms = BN_new();
-    // hs->compute_pms_online(pms, V, party);
-    //
-    // //hs->compute_master_key(pms, rc, 32, rs, 32);
-    //
-    // // Use session_hash instead of rc!
-    // hs->compute_extended_master_key(pms, rc, 32);
-    //
-    // hs->compute_expansion_keys(rc, 32, rs, 32);
-    //
-    // hs->compute_client_finished_msg(client_finished_label, client_finished_label_length, tau_c,
-    //                                 32);
-    // hs->compute_server_finished_msg(server_finished_label, server_finished_label_length, tau_s,
-    //                                 32);
-    //
-    // // padding the last 8 bytes of iv_c and iv_s according to TLS!
-    // unsigned char iv_c_oct[8], iv_s_oct[8];
-    // memset(iv_c_oct, 0x11, 8);
-    // memset(iv_s_oct, 0x22, 8);
-    // AEAD<IO>* aead_c = new AEAD<IO>(io, io_opt, cot, hs->client_write_key, hs->client_write_iv);
-    // AEAD<IO>* aead_s = new AEAD<IO>(io, io_opt, cot, hs->server_write_key, hs->server_write_iv);
-    //
-    // Record<IO>* rd = new Record<IO>;
-    //
-    // unsigned char* finc_ctxt = new unsigned char[finished_msg_length];
-    // unsigned char* finc_tag = new unsigned char[tag_length];
-    // unsigned char* msg = new unsigned char[finished_msg_length];
-    //
-    // // Use correct message instead of hs->client_ufin!
-    // hs->encrypt_client_finished_msg(aead_c, finc_ctxt, finc_tag, hs->client_ufin, 12, aad,
-    //                                 aad_len, iv_c_oct, 8, party);
-    //
-    // // Use correct ciphertext instead of finc_ctxt!
-    // hs->decrypt_server_finished_msg(aead_s, msg, finc_ctxt, finished_msg_length, finc_tag, aad,
-    //                                 aad_len, iv_s_oct, 8, party);
-    // cout << "handshake time: " << emp::time_from(start) << " us" << endl;
-    //
-    // unsigned char* cctxt = new unsigned char[QUERY_BYTE_LEN];
-    // unsigned char* ctag = new unsigned char[tag_length];
-    //
-    // unsigned char* sctxt = new unsigned char[RESPONSE_BYTE_LEN];
-    // unsigned char* stag = new unsigned char[tag_length];
-    // start = emp::clock_start();
-    //
-    // // the client encrypts the first message, and sends to the server.
-    // rd->encrypt(aead_c, io, cctxt, ctag, cmsg, QUERY_BYTE_LEN, aad, aad_len, iv_c_oct, 8, party);
-    // cout << "record time: " << emp::time_from(start) << " us" << endl;
-    // // prove handshake in post-record phase.
-    // start = emp::clock_start();
-    // switch_to_zk();
-
-    // The following fails to compile since we haven't defined a PostRecord constructor that takes in a Handshake13
-
-    // PostRecord<IO>* prd = new PostRecord<IO>(io, hs, aead_c, aead_s, rd, party);
-    // prd->reveal_pms(Ts);
-    // // Use correct finc_ctxt, fins_ctxt, iv_c, iv_s according to TLS!
-    // prd->prove_and_check_handshake_step1(rc, 32, rs, 32, tau_c, 32, tau_s, 32,
-    //                                      rc, 32, true);
-    // prd->prove_and_check_handshake_step2(finc_ctxt, finished_msg_length,
-    //                                      iv_c_oct, 8);
-    // prd->prove_and_check_handshake_step3(finc_ctxt, finished_msg_length,
-    //                                      iv_s_oct, 8);
-    // Integer prd_cmsg, prd_cmsg2, prd_smsg, prd_smsg2, prd_cz0, prd_c2z0, prd_sz0, prd_s2z0;
-    // prd->prove_record_client(prd_cmsg, prd_cz0, cctxt, QUERY_BYTE_LEN, iv_c_oct, 8);
-    // prd->prove_record_server_last(prd_smsg2, prd_s2z0, cctxt, RESPONSE_BYTE_LEN, iv_s_oct, 8);
-    //
-    // // Use correct finc_ctxt and fins_ctxt!
-    // prd->finalize_check(finc_ctxt, finc_tag, 12, aad, finc_ctxt, finc_tag, 12, aad, {prd_cz0},
-    //                     {cctxt}, {ctag}, {QUERY_BYTE_LEN}, {aad}, 1, {prd_sz0}, {sctxt},
-    //                     {stag}, {RESPONSE_BYTE_LEN}, {aad}, 1, aad_len);
-    //
-    // sync_zk_gc<IO>();
-    // switch_to_gc();
-    // cout << "post record: " << emp::time_from(start) << " us" << endl;
-    // EC_POINT_free(V);
-    // EC_POINT_free(Tc);
-    // BN_free(t);
-    // BN_free(ts);
-    // BN_free(pms);
-    // BN_free(full_pms);
-    // EC_POINT_free(Ts);
-
-    //delete hs;
-    // delete[] finc_ctxt;
-    // delete[] finc_tag;
-    // delete[] msg;
-    // delete[] cmsg;
-    // delete[] smsg;
-
-    // delete aead_c;
-    // delete aead_s;
-    // delete rd;
-    // delete prd;
 }
 
 inline void parse_args(const char *const *arg, int *party, int *servers, int *port) {
@@ -349,23 +265,32 @@ int main(int argc, char** argv) {
         ios[i] = new BoolIO<NetIO>(io[i], party == PROVER);
     }
 
-    //auto start = emp::clock_start();
+    auto start = emp::clock_start();
     setup_protocol<NetIO>(io[0], ios, threads, party);
+
 
     auto prot = (PrimusParty<NetIO>*)(ProtocolExecution::prot_exec);
     IKNP<NetIO>* cot = prot->ot;
+
+    // auto setup_time = emp::time_from(start);
+    // cout << "setup time: " << setup_time << " us" << endl;
+
     full_protocol<NetIO>(io[0], io_opt, cot, num_servers, party);
 
+    // auto run_time = emp::time_from(start) - setup_time;
+    // cout << "run time: " << run_time << " us" << endl;
 
-    //cout << "total time: " << emp::time_from(start) << " us" << endl;
-    //cout << "gc AND gates: " << dec << gc_circ_buf->num_and() << endl;
-    //cout << "zk AND gates: " << dec << zk_circ_buf->num_and() << endl;
+    // cout << "total time: " << emp::time_from(start) << " us" << endl;
+    // cout << "gc AND gates: " << dec << gc_circ_buf->num_and() << endl;
+    // cout << "zk AND gates: " << dec << zk_circ_buf->num_and() << endl;
 
     finalize_protocol();
 
     bool cheat = CheatRecord::cheated();
     if (cheat)
         error("cheat!\n");
+
+    // cout << "comm: " << (getComm(io, threads, io_opt) * 1.0) / 1024 << " KBytes" << endl;
 
     delete io_opt;
     for (int i = 0; i < threads; i++) {

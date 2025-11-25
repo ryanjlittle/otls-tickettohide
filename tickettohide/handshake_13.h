@@ -4,7 +4,6 @@
 #include "protocol/handshake.h"
 #include "prf_13.h"
 #include "constants.h"
-#include "tth_utils.h"
 
 using namespace emp;
 using namespace std;
@@ -19,11 +18,6 @@ public:
     HMAC_SHA256_TTH app_hmac;
     PRF_13 prf;
 
-    Integer zk_pms;
-    Integer zk_index;
-    Integer zk_hash_1;
-    Integer zk_hash_2;
-
     int num_servers;
     unsigned char* hs_hash_buf;
     unsigned char* app_hash_buf;
@@ -33,6 +27,10 @@ public:
     vector<uint32_t*> app_hmac_inner_hash_buf, app_hmac_outer_hash_buf;
     uint32_t* chts_hmac_internal_hash, *shts_hmac_internal_hash;
     uint32_t* cats_hmac_internal_hash, *sats_hmac_internal_hash;
+    vector<Integer> hs_secs_gc;
+    vector<Integer> master_secs_gc;
+    vector<Integer> outer_hash_hs_gcs;
+    vector<Integer> outer_hash_app_gcs;
 
     Integer chts, shts, cats, sats;
     string chts_revealed;
@@ -42,23 +40,33 @@ public:
     vector<string> dummy_hs_secs_revealed;
     vector<string> dummy_master_secs_revealed;
 
+    Integer master_key;
     Integer client_write_key;
     Integer server_write_key;
     Integer client_write_iv;
     Integer server_write_iv;
     string client_iv_revealed;
     string server_iv_revealed;
+    unsigned char* client_iv_bytes_revealed;
+    unsigned char* server_iv_bytes_revealed;
 
-    Integer master_key;
     unsigned char client_ufin[finished_msg_length];
     unsigned char server_ufin[finished_msg_length];
-    bool ENABLE_ROUNDS_OPT = false;
+
+    Integer zk_index;
+    Integer zk_chts_hash;
+    Integer zk_shts_hash;
+    Integer zk_cats_hash;
+    Integer zk_sats_hash;
+    Integer zk_client_iv;
+    Integer zk_server_iv;
+    Integer zk_client_key;
+    Integer zk_server_key;
 
     Handshake_13(IO* io, IO* io_opt, COT<IO>* ot, int num_servers, bool ENABLE_ROUNDS_OPT = false)
         : io(io) {
         this->io_opt = io_opt;
         this->num_servers = num_servers;
-        this->ENABLE_ROUNDS_OPT = ENABLE_ROUNDS_OPT;
     }
     ~Handshake_13() {
         delete[] hs_hash_buf;
@@ -67,6 +75,8 @@ public:
         delete[] shts_hmac_internal_hash;
         delete[] cats_hmac_internal_hash;
         delete[] sats_hmac_internal_hash;
+        delete[] client_iv_bytes_revealed;
+        delete[] server_iv_bytes_revealed;
 
         for (unsigned char* sec : hs_secs_buf) {
             delete[] sec;
@@ -236,29 +246,31 @@ public:
     }
 
     inline void compute_handshake_secrets(int party) {
-        // commit to index and hash
-        switch_to_zk();
-        zk_index = Integer(INDEX_LEN*8, index, PROVER);
-        zk_hash_1 = Integer(HASH_LEN*8, hs_hash_buf, PROVER);
-        sync_zk_gc<IO>();
-        switch_to_gc();
-
         if (party == VERIFIER) {
             handshake_secret_setup_verifier();
         } else if (party == PROVER) {
             handshake_secret_setup_prover();
         }
 
+        // commit to prover inputs
+        switch_to_zk();
+        zk_index = Integer(INDEX_LEN*8, index, PROVER);
+        zk_chts_hash = Integer(HASH_LEN*8, chts_hmac_internal_hash, PROVER);
+        zk_shts_hash = Integer(HASH_LEN*8, shts_hmac_internal_hash, PROVER);
+        sync_zk_gc<IO>();
+        switch_to_gc();
+
         // feed inputs into GC
         index_gc = Integer(INDEX_LEN*8, index, PROVER);
-        Integer session_hash = Integer(HASH_LEN*8, hs_hash_buf, PROVER);
-        Integer chts_internal_hash_gc = Integer(HASH_LEN*8, chts_hmac_internal_hash, PROVER);
-        Integer shts_internal_hash_gc = Integer(HASH_LEN*8, shts_hmac_internal_hash, PROVER);
-        vector<Integer> hs_secs(num_servers);
-        vector<Integer> outer_hashes(num_servers);
+        // Integer session_hash = Integer(HASH_LEN*8, hs_hash_buf, PROVER);
+        Integer chts_internal_hash_gc(HASH_LEN*8, chts_hmac_internal_hash, PROVER);
+        Integer shts_internal_hash_gc(HASH_LEN*8, shts_hmac_internal_hash, PROVER);
+
+        hs_secs_gc = vector<Integer>(num_servers);
+        outer_hash_hs_gcs = vector<Integer>(num_servers);
         for (int i = 0; i < num_servers; i++) {
-            hs_secs[i] = Integer(HASH_LEN*8, hs_secs_buf[i], VERIFIER);
-            outer_hashes[i] = Integer(HASH_LEN*8, hs_hmac_outer_hash_buf[i], VERIFIER);
+            hs_secs_gc[i] = Integer(HASH_LEN*8, hs_secs_buf[i], VERIFIER);
+            outer_hash_hs_gcs[i] = Integer(HASH_LEN*8, hs_hmac_outer_hash_buf[i], VERIFIER);
         }
 
         // select real handshake secret and hash, as well and dummy secrets + hashes
@@ -269,10 +281,10 @@ public:
         Integer zero = Integer(HASH_LEN*8, 0);
         for (int i = 0; i < num_servers; i++) {
             Bit sel = index_gc.equal(Integer(INDEX_LEN*8, i)); // sel = 1 if i == index
-            real_hs_sec = real_hs_sec.select(sel, hs_secs[i]); // real_hs_sec unchanged if sel=0, set to hs_sec[i] if sel=1
-            dummy_hs_secs[i] = hs_secs[i].select(sel, zero); // set to hs_sec[i] if sel=0, or zero if sel=1
-            outer_hash = outer_hash.select(sel, outer_hashes[i]);
-            dummy_hashes[i] = outer_hashes[i].select(sel, zero);
+            real_hs_sec = real_hs_sec.select(sel, hs_secs_gc[i]); // real_hs_sec unchanged if sel=0, set to hs_sec[i] if sel=1
+            dummy_hs_secs[i] = hs_secs_gc[i].select(sel, zero); // set to hs_sec[i] if sel=0, or zero if sel=1
+            outer_hash = outer_hash.select(sel, outer_hash_hs_gcs[i]);
+            dummy_hashes[i] = outer_hash_hs_gcs[i].select(sel, zero);
         }
 
         // compute CHTS and SHTS from real handshake secret
@@ -290,27 +302,28 @@ public:
     }
 
     inline void compute_application_keys(int party) {
-        // commit to prover's hash
-        switch_to_zk();
-        zk_hash_2 = Integer(HASH_LEN*8, app_hash_buf, PROVER);
-        sync_zk_gc<IO>();
-        switch_to_gc();
-
         if (party == VERIFIER) {
             application_secret_setup_verifier();
         } else if (party == PROVER) {
             application_secret_setup_prover();
         }
 
+        // commit to prover's hash
+        switch_to_zk();
+        zk_cats_hash = Integer(HASH_LEN*8, cats_hmac_internal_hash, PROVER);
+        zk_sats_hash = Integer(HASH_LEN*8, sats_hmac_internal_hash, PROVER);
+        sync_zk_gc<IO>();
+        switch_to_gc();
+
         // feed inputs into GC
-        Integer session_hash = Integer(HASH_LEN*8, app_hash_buf, PROVER);
         Integer cats_internal_hash_gc = Integer(HASH_LEN*8, cats_hmac_internal_hash, PROVER);
         Integer sats_internal_hash_gc = Integer(HASH_LEN*8, sats_hmac_internal_hash, PROVER);
-        vector<Integer> master_secs(num_servers);
-        vector<Integer> outer_hashes(num_servers);
+        // Integer session_hash = Integer(HASH_LEN*8, app_hash_buf, PROVER);
+        master_secs_gc = vector<Integer>(num_servers);
+        outer_hash_app_gcs = vector<Integer>(num_servers);
         for (int i = 0; i < num_servers; i++) {
-            master_secs[i] = Integer(HASH_LEN*8, master_secs_buf[i], VERIFIER);
-            outer_hashes[i] = Integer(HASH_LEN*8, app_hmac_outer_hash_buf[i], VERIFIER);
+            master_secs_gc[i] = Integer(HASH_LEN*8, master_secs_buf[i], VERIFIER);
+            outer_hash_app_gcs[i] = Integer(HASH_LEN*8, app_hmac_outer_hash_buf[i], VERIFIER);
         }
 
         // select real master secret and hash, and dummy secrets
@@ -321,10 +334,10 @@ public:
         Integer zero = Integer(HASH_LEN*8, 0);
         for (int i = 0; i < num_servers; i++) {
             Bit sel = index_gc.equal(Integer(INDEX_LEN*8, i)); // sel = 1 if i == index
-            real_master_sec = real_master_sec.select(sel, master_secs[i]); // real_master_sec unchanged if sel=0, set to master_secs[i] if sel=1
-            dummy_master_secs[i] = master_secs[i].select(sel, zero); // set to master_secs[i] if sel=0, or zero if sel=1
-            outer_hash = outer_hash.select(sel, outer_hashes[i]);
-            dummy_outer_hashes[i] = outer_hashes[i].select(sel, zero);
+            real_master_sec = real_master_sec.select(sel, master_secs_gc[i]); // real_master_sec unchanged if sel=0, set to master_secs[i] if sel=1
+            dummy_master_secs[i] = master_secs_gc[i].select(sel, zero); // set to master_secs[i] if sel=0, or zero if sel=1
+            outer_hash = outer_hash.select(sel, outer_hash_app_gcs[i]);
+            dummy_outer_hashes[i] = outer_hash_app_gcs[i].select(sel, zero);
         }
 
         // compute keys
@@ -347,130 +360,80 @@ public:
         // reveal IVs to both parties
         client_iv_revealed = client_write_iv.reveal<string>(PUBLIC);
         server_iv_revealed = server_write_iv.reveal<string>(PUBLIC);
-    }
-};
 
-class HandShake13Offline {
-   public:
-    HMAC_SHA256_Offline hmac;
-    PRFOffline prf;
-    BIGNUM* q;
-    BN_CTX* ctx;
-
-    Integer master_key;
-    Integer client_write_key;
-    Integer server_write_key;
-    Integer client_write_iv;
-    Integer server_write_iv;
-
-    unsigned char client_ufin[finished_msg_length];
-    unsigned char server_ufin[finished_msg_length];
-
-    bool ENABLE_ROUNDS_OPT = false;
-    HandShake13Offline(EC_GROUP* group, bool ENABLE_ROUNDS_OPT = false) {
-        q = BN_new();
-        ctx = BN_CTX_new();
-        EC_GROUP_get_curve(group, q, NULL, NULL, ctx);
-        this->ENABLE_ROUNDS_OPT = ENABLE_ROUNDS_OPT;
-    }
-    ~HandShake13Offline() {
-        BN_CTX_free(ctx);
-        BN_free(q);
+        client_iv_bytes_revealed = new unsigned char[IV_LEN];
+        server_iv_bytes_revealed = new unsigned char[IV_LEN];
+        client_write_iv.reveal((unsigned char*) client_iv_bytes_revealed, PUBLIC);
+        server_write_iv.reveal((unsigned char*) server_iv_bytes_revealed, PUBLIC);
     }
 
-    inline void compute_master_key() {
-        size_t len = BN_num_bytes(q);
-        unsigned char* buf = new unsigned char[len];
-        memset(buf, 0x00, len);
-        Integer pmsa, pmsb;
-        pmsa = Integer(len * 8, buf, PROVER);
-        pmsb = Integer(len * 8, buf, VERIFIER);
+    inline void prove_handshake_secrets(
+        Integer& chts_zk,
+        Integer& shts_zk,
+        const vector<unsigned char*> &handshake_secrets,
+        const vector<uint32_t*> &outer_hashes
+        ) {
 
-        Integer pmsbits;
-        addmod(pmsbits, pmsa, pmsb, q);
+        Integer real_hs_sec(HASH_LEN*8, 0);
+        Integer outer_hash(HASH_LEN*8, 0);
+        vector<Integer> dummy_hs_secs(num_servers);
+        vector<Integer> dummy_hashes(num_servers);
+        Integer zero = Integer(HASH_LEN*8, 0);
 
-        prf.init(hmac, pmsbits);
-        if (!ENABLE_ROUNDS_OPT) {
-            prf.opt_compute(hmac, master_key, master_key_length * 8, pmsbits, true, true);
-        } else {
-            prf.opt_rounds_compute(hmac, master_key, master_key_length * 8, pmsbits,
-                                   master_key_label_length + 2 * random_length, true, true);
+        vector<Integer> hs_secs_zk(num_servers);
+
+        for (int i = 0; i < num_servers; i++) {
+            Integer hs_sec_zk(HASH_LEN*8, handshake_secrets[i], PUBLIC);
+            Integer counter(INDEX_LEN*8, i, PUBLIC);
+            Integer outer_hash_zk(HASH_LEN*8, outer_hashes[i], PUBLIC);
+
+            Bit sel = zk_index.equal(counter);
+            real_hs_sec = real_hs_sec.select(sel, hs_sec_zk);
+            dummy_hs_secs[i] = hs_sec_zk.select(sel, zero);
+            outer_hash = outer_hash.select(sel, outer_hash_zk);
+            dummy_hashes[i] = outer_hash_zk.select(sel, zero);
         }
 
-        delete[] buf;
+        prf.compute_chts_shts_opt(chts_zk, shts_zk, outer_hash, zk_chts_hash, zk_shts_hash);
     }
 
-    inline void compute_extended_master_key() {
-        size_t len = BN_num_bytes(q);
-        unsigned char* buf = new unsigned char[len];
-        memset(buf, 0x00, len);
-        Integer pmsa, pmsb;
-        pmsa = Integer(len * 8, buf, PROVER);
-        pmsb = Integer(len * 8, buf, VERIFIER);
+    inline void prove_application_keys(
+        vector<unsigned char*> master_secs,
+        const vector<uint32_t*> &outer_hashes,
+        int party
+    ) {
+        // select real master secret and hash, and dummy secrets
+        Integer real_master_sec(HASH_LEN*8, 0);
+        Integer outer_hash(HASH_LEN*8, 0);
+        vector<Integer> dummy_master_secs(num_servers);
+        vector<Integer> dummy_outer_hashes(num_servers);
+        Integer zero = Integer(HASH_LEN*8, 0);
+        for (int i = 0; i < num_servers; i++) {
+            Integer master_sec_zk(HASH_LEN*8, master_secs[i], PUBLIC);
+            Integer counter(INDEX_LEN*8, i, PUBLIC);
+            Integer outer_hash_zk(HASH_LEN*8, outer_hashes[i], PUBLIC);
 
-        Integer pmsbits;
-        addmod(pmsbits, pmsa, pmsb, q);
-
-        prf.init(hmac, pmsbits);
-        if (!ENABLE_ROUNDS_OPT) {
-            prf.opt_compute(hmac, master_key, extended_master_key_length * 8, pmsbits, true,
-                            true);
-        } else {
-            prf.opt_rounds_compute(hmac, master_key, extended_master_key_length * 8, pmsbits,
-                                   extended_master_key_label_length + session_hash_length,
-                                   true, true);
+            Bit sel = zk_index.equal(Integer(INDEX_LEN*8, i));
+            real_master_sec = real_master_sec.select(sel, master_sec_zk);
+            dummy_master_secs[i] = master_sec_zk.select(sel, zero);
+            outer_hash = outer_hash.select(sel, outer_hash_zk);
+            dummy_outer_hashes[i] = master_sec_zk.select(sel, zero);
         }
-        delete[] buf;
-    }
+        Integer zk_cats;
+        Integer zk_sats;
+        prf.compute_cats_sats_opt(zk_cats, zk_sats, outer_hash, zk_cats_hash, zk_sats_hash);
 
-    inline void compute_expansion_keys() {
-        Integer key;
-        prf.init(hmac, master_key);
-        if (!ENABLE_ROUNDS_OPT) {
-            prf.opt_compute(hmac, key, expansion_key_length * 8, master_key, true, true);
-        } else {
-            prf.opt_rounds_compute(hmac, key, expansion_key_length * 8, master_key,
-                                   key_expansion_label_length + 2 * random_length, true, true);
-        }
-        extract_integer(client_write_key, key, 0, key_length * 8);
-        extract_integer(server_write_key, key, key_length * 8, key_length * 8);
+        prf.compute_application_keys(zk_client_key,
+                                     zk_client_iv,
+                                     zk_server_key,
+                                     zk_server_iv,
+                                     zk_cats,
+                                     zk_sats,
+                                     true
+        );
 
-        extract_integer(client_write_iv, key, key_length * 8 * 2, iv_length * 8);
-        extract_integer(server_write_iv, key, key_length * 8 * 2 + iv_length * 8,
-                        iv_length * 8);
-    }
-
-    inline void compute_client_finished_msg() {
-        Integer ufin_int;
-        if (!ENABLE_ROUNDS_OPT) {
-            prf.opt_compute(hmac, ufin_int, finished_msg_length * 8, master_key, true, true);
-
-        } else {
-            prf.opt_rounds_compute(hmac, ufin_int, finished_msg_length * 8, master_key,
-                                   client_finished_label_length + session_hash_length, true,
-                                   true);
-        }
-        ufin_int.reveal<unsigned char>((unsigned char*)client_ufin, PUBLIC);
-    }
-
-    inline void compute_server_finished_msg() {
-        Integer ufin_int;
-        if (!ENABLE_ROUNDS_OPT) {
-            prf.opt_compute(hmac, ufin_int, finished_msg_length * 8, master_key, true, true);
-        } else {
-            prf.opt_rounds_compute(hmac, ufin_int, finished_msg_length * 8, master_key,
-                                   server_finished_label_length + session_hash_length, true,
-                                   true);
-        }
-        ufin_int.reveal<unsigned char>((unsigned char*)server_ufin, PUBLIC);
-    }
-
-    inline void encrypt_client_finished_msg(AEADOffline* aead_c_offline, size_t ufinc_len) {
-        aead_c_offline->encrypt(ufinc_len);
-    }
-
-    inline void decrypt_server_finished_msg(AEADOffline* aead_s_offline, size_t ufins_len) {
-        aead_s_offline->decrypt(ufins_len);
+        check_zero<IO>(zk_client_iv, client_iv_bytes_revealed, IV_LEN, party);
+        check_zero<IO>(zk_server_iv, server_iv_bytes_revealed, IV_LEN, party);
     }
 };
 

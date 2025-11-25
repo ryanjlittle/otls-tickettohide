@@ -47,7 +47,7 @@ IF(LOAD_CIRCUIT_FROM_MEM)
     src/cipher/circuit_files/aes128_with_ks_data.cpp
   )
 ENDIF()
-option(USE_PRIMUS_EMP "use primus emp" OFF)
+option(USE_PRIMUS_EMP "use primus emp" ON)
 IF(USE_PRIMUS_EMP)
   add_definitions(-DUSE_PRIMUS_EMP=1)
 ENDIF()

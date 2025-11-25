@@ -1,8 +1,8 @@
 #ifndef _AEAD_13_
 #define _AEAD_13_
 
-#include "protocol/aead.h"
 #include "constants.h"
+#include "protocol/aead.h"
 
 using namespace emp;
 
@@ -28,15 +28,6 @@ class AEAD_13 : public AEAD<IO> {
         concat(this->nonce, &counter_gc, 1);
     }
 
-    // increments the nonce. Replaces inc() method to replace integer addition with XORs
-    // inline void inc_nonce() {
-    //     uint32_t counter_diff = aes_counter ^ (aes_counter + 1);
-    //     aes_counter++;
-    //     Integer counter_diff_gc = Integer(32, &counter_diff, PUBLIC);
-    //     for (int i=0; i<32; i++) {
-    //         this->nonce.bits[i] ^= counter_diff_gc.bits[i];
-    //     }
-    // }
 
     // updates the IV for a new record. This is different from updating the nonce.
     // the IV is the first 12 bytes of the nonce, and is updated with each new TLS record.
@@ -47,17 +38,11 @@ class AEAD_13 : public AEAD<IO> {
         Integer counter_diff_gc = Integer(8, counter_diff, PUBLIC);
         Integer new_nonce;
         extract_integer(new_nonce, this->nonce, 0, 8*12);
-        //new_nonce ^= counter_diff_gc;
-
 
         for (int i=0; i<8; i++) {
             new_nonce.bits[i] ^= counter_diff_gc.bits[i];
         }
-
-
-        // aes_counter = 1;
         set_nonce(new_nonce);
-
     }
 
     inline void gctr(Integer& res, size_t m) {
@@ -90,21 +75,35 @@ class AEAD_13 : public AEAD<IO> {
         Integer Z0;
         Z0.bits.insert(Z0.bits.end(), Z.bits.end() - 128, Z.bits.end());
         block z0 = integer_to_block(Z0);
-        Z.bits.erase(Z.bits.end() - 128, Z.bits.end());
-        Z.bits.erase(Z.bits.begin(), Z.bits.begin() + u);
 
         // store xor share z0;
         this->gc_z0.push_back(z0);
 
-        // commit PROVER's share of z0 and Z using izk.
+        // commit PROVER's share of z0 using izk.
         switch_to_zk();
         this->zk_z0.push_back(Integer(8 * sizeof(block), &z0, PROVER));
-        this->zk_z.push_back(Z); // not sure if this is right
+        sync_zk_gc<IO>();
+        switch_to_gc();
+
+        Z.bits.erase(Z.bits.end() - 128, Z.bits.end());
+        Z.bits.erase(Z.bits.begin(), Z.bits.begin() + u);
+
+        unsigned char* z = new unsigned char[msg_len];
+        integer_to_chars(z, Z);
+
+        this->gc_z.push_back(nullptr);
+        this->gc_z.back() = new unsigned char[msg_len];
+        memcpy(this->gc_z.back(), z, msg_len);
+        reverse(this->gc_z.back(), this->gc_z.back() + msg_len);
+        this->z_len.push_back(msg_len);
+
+        // commit PROVER's xor share of z using izk.
+        switch_to_zk();
+        this->zk_z.push_back(Integer(8 * msg_len, this->gc_z.back(), PROVER));
         sync_zk_gc<IO>();
         switch_to_gc();
 
         // reveal Z to prover
-        unsigned char* z = new unsigned char[msg_len];
         Z.reveal(z, PROVER);
         if (party == VERIFIER)
             memset(z, 0, msg_len);
@@ -143,7 +142,7 @@ class AEAD_13 : public AEAD<IO> {
         block out = zero_block;
         this->obv_ghash(out, xblk, (8 * len) / 128, party);
 
-        out ^= z0;
+        out = out ^ z0;
 
         if (party == VERIFIER) {
             io->send_block(&out, 1);
@@ -151,11 +150,11 @@ class AEAD_13 : public AEAD<IO> {
         } else {
             block out_recv = zero_block;
             io->recv_block(&out_recv, 1);
-            out ^= out_recv;
+            out = out ^ out_recv;
         }
 
-        memcpy(tag, (unsigned char*)&out, 16);
-        reverse(tag, tag + 16);
+        memcpy(tag, (unsigned char*)&out, TAG_LEN);
+        reverse(tag, tag + TAG_LEN);
         delete[] x;
     }
 };
