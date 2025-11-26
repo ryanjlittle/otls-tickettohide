@@ -17,7 +17,8 @@ python3 -m tls13.tls13_spec_gen
 python3 -m tickettohide.proof_spec_gen
 
 echo -e "${GREEN}Running tests${RESET}"
-python3 -m tls13.test_client_server
-python3 -m tls13.test_specs
+python3 -m testing.test_client_server
+python3 -m testing.test_specs
+python3 -m testing.test_proof
 
-echo -e "${GREEN}Python setup complete${RESET}"
+echo -e "${GREEN}Tests passed. Python setup complete${RESET}"

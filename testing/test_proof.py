@@ -67,7 +67,6 @@ class ProofTest:
         self.prover_thread.join()
 
 
-
     def start_servers(self):
         port = self.min_port
         servers = []
@@ -90,34 +89,12 @@ class ProofTest:
 
 
 
-            # server_secret = gen_server_secrets(rgen=Random(self.rseed+i))
-            # cert_der = server_secret.cert.cert_der
-            # ech_pubkeys = [ech.config.data.key_config.public_key for ech in server_secret.eches]
-            # t = threading.Thread(
-            #     name=f"server {i}",
-            #     target=start_test_server,
-            #     args=(HttpHandler(), self.hostname, port, server_secret, 3, self.rseed+i,),
-            #     daemon=True
-            # )
-            # self.server_threads.append(t)
-            # t.start()
-            # # start_server(HttpHandler(), self.hostname, port, server_secret, self.rseed)
-            # logger.info(f'server opened on port {port}')
-            # self.server_ids.append(ServerID(self.hostname, port, cert_der, ech_pubkeys))
-            # port += 1
-
-
-
     def start_prover(self):
         #self.prover = HttpsProver(self.server_ids, 0, None, rseed=self.rseed) # TODO: these shouldn't be hardcoded
         prover_secrets = ProverSecrets(
             index = 0,
             queries = [http_get_req(server.hostname, '/') for server in self.server_ids],
         )
-        # with open('secrets.txt', 'wb') as f:
-        #     f.write(b'\x00')
-        # with open('secrets.txt', 'a') as f:
-        #     f.writelines(['\n' + base64.b64encode(x).decode("ascii") for x in prover_secrets.queries])
 
         def _run_prover(server_ids, secrets):
             with Prover(self.server_ids, prover_secrets, rseed=self.rseed) as prover:
@@ -137,49 +114,10 @@ class ProofTest:
             # wait until the server starts up
             sleep(0.1)
 
-        # with Prover(self.server_ids, prover_secrets) as prover:
-        #     self.prover = prover
-        #
-        #     self.prover_thread = threading.Thread(name='prover',
-        #                                      target = self.prover.run,
-        #                                      daemon=True
-        #     )
-        #     self.prover_thread.start()
-
-
-            # while not self.prover.listening:
-            #     # wait until the server starts up
-            #     sleep(0.1)
-
-            # self.prover_host = self.prover.host
-            # self.prover_port = self.prover.port # this needs to happen after the server is listening, since the port might be dynamically assigned
-
 
     def start_verifier(self):
         with Verifier(self.server_ids, rseed=self.rseed) as verifier:
             verifier.run()
-#
-# def start_test_server(handler, hostname='localhost', port=0, server_secrets=None, max_connections=1, rseed=None):
-#     """Starts a temporary server that handles a fixed number of connections and then kills itself"""
-#     if server_secrets is None:
-#         logger.info('generating new self-signed server cert and ECH config')
-#         server_secrets = gen_server_secrets(hostname)
-#
-#     ticketer = ServerTicketer()
-#
-#     with socket.create_server((hostname, port)) as ssock:
-#         for i in range(max_connections):
-#             logger.info(f'listening for connection to {hostname} on port {port}')
-#             sock, addr = ssock.accept()
-#             st = _ServerThread(handler, server_secrets, ticketer, rseed)
-#             tname = f'{threading.current_thread().name} conn {i+1}'
-#             sthread = threading.Thread(name=tname, target=st, args=(sock, addr,))
-#             logger.info(f'launching new thread to handle client connection')
-#             sthread.start()
-#             if rseed is not None:
-#                 rseed += 1
-#
-#         logger.info('processed maximum number of connections, shutting down')
 
 def experiment_ech_test():
     hostname, port = 'google.com', 443
@@ -194,13 +132,13 @@ def experiment_ech_test():
         client.connect_socket(csock)
         #client.close_notify()
         #client._rreader.fetch()
-        sleep(1)
+        # sleep(1)
         #print_file(client.handshake.rreader.file)
         #client.close_notify()
 
 
         client.send(http_get_req(hostname, '/'))
-        sleep(1)
+        # sleep(1)
        # print_file(client.handshake.rreader.file)
         logger.info('===== ')
         print(f'tickets: {client.tickets}')
@@ -212,55 +150,6 @@ def experiment_ech_test():
         logger.info('=====')
 
         print(f'tickets: {client.tickets}')
-
-def test_ech_with_ticket(hostname, port):
-    # hostname, port = 'localhost', 8000
-
-    # server = TestServer(hostname, port, max_responses=4)
-    #
-    # thread = threading.Thread(target=server.serve)
-    # thread.start()
-
-    options = CLIENT_OPTIONS
-    client0 = build_client(sni=hostname, options=options)
-    request = http_get_req(hostname, '/')
-    with socket.create_connection((hostname, port)) as csock:
-        client0.connect_socket(csock)
-        client0.send(request)
-        response = client0.recv(2 ** 16)
-    assert client0.ech_configs
-    assert client0.tickets
-    print(f'successfully obtained {len(client0.tickets)} tickets and ech configs: {response}')
-
-    # Ticket, no ECH
-    options = CLIENT_OPTIONS.replace(send_ech=False, send_psk=True, tickets=[client0.tickets[0].uncreate()])
-    client = build_client(sni=hostname, options=options)
-    with socket.create_connection((hostname, port)) as csock:
-        client.connect_socket(csock)
-        client.send(request)
-        response = client.recv(2 ** 16)
-    print(f'success with ticket and no ECH: {response}')
-
-    # ECH, no ticket
-    options = CLIENT_OPTIONS.replace(ech_configs=client0.ech_configs[:1])
-    #client = build_client(sni=hostname, ech_config=client0.ech_configs[0]) # works
-    client = build_client(sni=hostname, options=options) # doesnt work
-
-    with socket.create_connection((hostname, port)) as csock:
-        client.connect_socket(csock)
-        client.send(request)
-        response = client.recv(2 ** 16)
-    print(f'success with ECH and no ticket: {response}')
-
-    # ECH and ticket
-    options = CLIENT_OPTIONS.replace(ech_configs=client0.ech_configs[:1], send_psk=True, tickets=[client0.tickets[1].uncreate()])
-    client = build_client(sni=hostname, options=options)
-    with socket.create_connection((hostname, port)) as csock:
-        client.connect_socket(csock)
-        client.send(request)
-        response = client.recv(2 ** 16)
-    print(f'success with ECH and ticket: {response}')
-
 
 
 class TestServer:
@@ -322,21 +211,11 @@ class TestServer:
                     self.rseed += 1
 
 
-
 if __name__ == '__main__':
     num_servers = 2
     rseed = 0
 
-    #test_ech_with_ticket('cloudflare-ech.com', 443)
-
     test = ProofTest(num_servers, rseed=rseed)
-
-    # with open('prover_outer', 'rb') as f:
-    #     prover_trans = ClientHelloHandshake.unpack(f.read())
-    #
-    # with open('server_outer', 'rb') as f:
-    #     server_trans = ClientHelloHandshake.unpack(f.read())
-
-    # test.run()
     test.run_on_real_server()
+    print("PASSED prover and verifier test")
 
