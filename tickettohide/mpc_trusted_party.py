@@ -1,8 +1,8 @@
 from random import Random, SystemRandom
 
-from tls_common import *
-from tls13_spec import CipherSuite
-from tls_crypto import get_hash_alg, get_cipher_alg, derive_secret, hkdf_expand_label
+from tls13.tls_common import *
+from tls13.tls13_spec import CipherSuite
+from tls13.tls_crypto import get_hash_alg, get_cipher_alg, derive_secret, hkdf_expand_label
 
 
 class TrustedParty(ABC):

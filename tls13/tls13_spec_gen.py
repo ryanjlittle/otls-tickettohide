@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 
-from util import kwdict
-from spec import (
+from tls13.util import kwdict
+from tls13.spec import (
     Raw,
     String,
     Empty,
     Fill,
     Bool,
 )
-from spec_gen import (
+from tls13.spec_gen import (
     GenSpec,
     NamedConst,
     NamedConst,
@@ -496,9 +496,9 @@ specs: dict[str, GenSpec] = kwdict(
 
 def write_to(fname: str) -> None:
     with open(fname, 'w') as fout:
-        fout.write("from tls_common import *")
+        fout.write("from tls13.tls_common import *")
         generate_specs(fout, **specs)
     print('specs written to', fname)
 
 if __name__ == '__main__':
-    write_to('tls13_spec.py')
+    write_to('tls13/tls13_spec.py')

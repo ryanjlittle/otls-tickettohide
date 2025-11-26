@@ -2,15 +2,13 @@
 
 """Perform simple HTTP GET requests over TLS."""
 
-import socket
 import argparse
-import logging
 import json
 import sys
 
-from tls_common import *
-from tls_client import tls_query, DEFAULT_CLIENT_OPTIONS
-from tls13_spec import TicketInfo, ClientOptions, ECHConfig
+from tls13.tls13_spec import TicketInfo, ECHConfig
+from tls13.tls_client import tls_query, DEFAULT_CLIENT_OPTIONS
+from tls13.tls_common import *
 
 
 def http_get_req(hostname: str, path: str = '/') -> bytes:

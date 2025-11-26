@@ -2,13 +2,11 @@
 
 """TLS server responding to HTTP GET requests."""
 
-import socket
 import argparse
-import logging
 
-from tls_common import *
-from tls_records import CloseNotifyException
-from tls_server import Server, start_server, server_thread_info
+from tls13.tls_common import *
+from tls13.tls_records import CloseNotifyException
+from tls13.tls_server import Server, start_server, server_thread_info
 
 
 class HttpHandler:

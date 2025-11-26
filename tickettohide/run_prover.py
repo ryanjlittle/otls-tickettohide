@@ -1,10 +1,12 @@
 import argparse
 import base64
+import time
 
-from prover import Prover
-from prover_crypto import ProverSecrets
-from tls_common import *
-from tls_server import ServerID
+from tls13.tls_common import *
+from tls13.tls_server import ServerID
+
+from tickettohide.prover import Prover
+from tickettohide.prover_crypto import ProverSecrets
 
 def main():
     parser = argparse.ArgumentParser(description="Runs the prover program")
@@ -33,9 +35,11 @@ def main():
     )
 
 
-
     with Prover(server_ids, prover_secrets, port=args.main_port, mpc_port=args.mpc_port, rseed=args.rseed) as prover:
+        start = time.perf_counter()
         prover.run()
+        stop = time.perf_counter()
+        print(f'Elapsed time: {stop - start:.6f}')
 
 if __name__ == '__main__':
     main()

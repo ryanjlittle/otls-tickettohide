@@ -1,12 +1,13 @@
-from tls_common import *
+from tls13.tls_common import *
 # XXX AUTO-GENERATED - DO NOT EDIT! XXX
 from typing import Self, override, BinaryIO, ClassVar, Any
 from collections.abc import Iterable
 import enum
 import dataclasses
 from dataclasses import dataclass
-import spec
-from spec import *
+import tls13
+from tls13 import spec
+from tls13.spec import *
 
 class Uint8(spec._Integral):
     _BYTE_LENGTH = 1
@@ -610,7 +611,7 @@ class HpkeAeadId(spec._NamedConstBase[HpkeAeadIds]):
     def __init__(self, value: int) -> None:
         self._subclass_init(value)
 
-class BoundedRaw(spec.Raw, Spec):
+class BoundedRaw(tls13.spec.Raw, Spec):
     _LENGTH_TYPES: tuple[type[spec._Integral],...]
 
     @override
@@ -836,7 +837,7 @@ class GenericClientExtension(spec._Selectee[ExtensionTypes, B16Raw]):
     def parent(self) -> 'ClientExtension':
         return ClientExtension(self)
 
-class BoundedString(spec.String, Spec):
+class BoundedString(tls13.spec.String, Spec):
     _LENGTH_TYPES: tuple[type[spec._Integral],...]
 
     @override
@@ -1768,14 +1769,14 @@ class OuterECHClientHello(spec._SpecificSelectee[ECHClientHelloTypes, OuterECHCl
         orig_cipher_suite, orig_config_id, orig_enc, orig_payload = self.uncreate()
         return self.create((orig_cipher_suite if cipher_suite is None else cipher_suite), (orig_config_id if config_id is None else config_id), (orig_enc if enc is None else enc), (orig_payload if payload is None else payload))
 
-class InnerECHClientHello(spec._SpecificSelectee[ECHClientHelloTypes, spec.Empty]):
+class InnerECHClientHello(spec._SpecificSelectee[ECHClientHelloTypes, tls13.spec.Empty]):
     _SELECT_TYPE = ECHClientHelloType
-    _DATA_TYPE = spec.Empty
+    _DATA_TYPE = tls13.spec.Empty
     _SELECTOR = ECHClientHelloTypes.INNER
 
     @classmethod
     def create(cls) -> Self:
-        return cls(data=spec.Empty.create())
+        return cls(data=tls13.spec.Empty.create())
 
     def uncreate(self) -> tuple[()]:
         return self.data.uncreate()
@@ -4222,17 +4223,17 @@ class ServerTicketCiphertext(spec._StructBase):
 @dataclass(frozen=True)
 class InnerPlaintextBase(spec._StructBase):
     _member_names: ClassVar[tuple[str,...]] = ('payload','typ','padding',)
-    _member_types: ClassVar[tuple[type[Spec],...]] = (spec.Raw,ContentType,spec.Fill,)
-    payload: spec.Raw
+    _member_types: ClassVar[tuple[type[Spec],...]] = (tls13.spec.Raw,ContentType,tls13.spec.Fill,)
+    payload: tls13.spec.Raw
     typ: ContentType
-    padding: spec.Fill
+    padding: tls13.spec.Fill
 
     def replace(self, payload:bytes|None=None, typ:int|ContentType|None=None, padding:int|None=None) -> Self:
-        return type(self)((self.payload if payload is None else spec.Raw.create(payload)), (self.typ if typ is None else ContentType.create(typ)), (self.padding if padding is None else spec.Fill.create(padding)))
+        return type(self)((self.payload if payload is None else tls13.spec.Raw.create(payload)), (self.typ if typ is None else ContentType.create(typ)), (self.padding if padding is None else tls13.spec.Fill.create(padding)))
 
     @classmethod
     def create(cls,payload:bytes,typ:int|ContentType,padding:int) -> Self:
-        return cls(payload=spec.Raw.create(payload), typ=ContentType.create(typ), padding=spec.Fill.create(padding))
+        return cls(payload=tls13.spec.Raw.create(payload), typ=ContentType.create(typ), padding=tls13.spec.Fill.create(padding))
 
     def uncreate(self) -> tuple[bytes, int|ContentType, int]:
         return (self.payload.uncreate(), self.typ.uncreate(), self.padding.uncreate())
@@ -4240,17 +4241,17 @@ class InnerPlaintextBase(spec._StructBase):
 @dataclass(frozen=True)
 class RecordEntry(spec._StructBase):
     _member_names: ClassVar[tuple[str,...]] = ('raw','record','from_client',)
-    _member_types: ClassVar[tuple[type[Spec],...]] = (B16Raw,Record,spec.Bool,)
+    _member_types: ClassVar[tuple[type[Spec],...]] = (B16Raw,Record,tls13.spec.Bool,)
     raw: B16Raw
     record: Record
-    from_client: spec.Bool
+    from_client: tls13.spec.Bool
 
     def replace(self, raw:bytes|None=None, record:tuple[int|ContentType,int|Version,bytes]|None=None, from_client:bool|None=None) -> Self:
-        return type(self)((self.raw if raw is None else B16Raw.create(raw)), (self.record if record is None else Record.create(*record)), (self.from_client if from_client is None else spec.Bool.create(from_client)))
+        return type(self)((self.raw if raw is None else B16Raw.create(raw)), (self.record if record is None else Record.create(*record)), (self.from_client if from_client is None else tls13.spec.Bool.create(from_client)))
 
     @classmethod
     def create(cls,raw:bytes,record:tuple[int|ContentType,int|Version,bytes],from_client:bool) -> Self:
-        return cls(raw=B16Raw.create(raw), record=Record.create(*record), from_client=spec.Bool.create(from_client))
+        return cls(raw=B16Raw.create(raw), record=Record.create(*record), from_client=tls13.spec.Bool.create(from_client))
 
     def uncreate(self) -> tuple[bytes, tuple[int|ContentType,int|Version,bytes], bool]:
         return (self.raw.uncreate(), self.record.uncreate(), self.from_client.uncreate())
@@ -4522,25 +4523,25 @@ class B16SeqECHConfig(BoundedSeqECHConfig):
 @dataclass(frozen=True)
 class ClientOptions(spec._StructBase):
     _member_names: ClassVar[tuple[str,...]] = ('send_sni','ciphers','kex_shares','kex_groups','sig_algs','send_psk','tickets','psk_modes','send_time','send_ech','ech_configs',)
-    _member_types: ClassVar[tuple[type[Spec],...]] = (spec.Bool,B8SeqCipherSuite,B16SeqNamedGroup,B16SeqNamedGroup,B16SeqSignatureScheme,spec.Bool,B32SeqTicketInfo,B8SeqPskKeyExchangeMode,MaybeUint64,spec.Bool,B16SeqECHConfig,)
-    send_sni: spec.Bool
+    _member_types: ClassVar[tuple[type[Spec],...]] = (tls13.spec.Bool,B8SeqCipherSuite,B16SeqNamedGroup,B16SeqNamedGroup,B16SeqSignatureScheme,tls13.spec.Bool,B32SeqTicketInfo,B8SeqPskKeyExchangeMode,MaybeUint64,tls13.spec.Bool,B16SeqECHConfig,)
+    send_sni: tls13.spec.Bool
     ciphers: B8SeqCipherSuite
     kex_shares: B16SeqNamedGroup
     kex_groups: B16SeqNamedGroup
     sig_algs: B16SeqSignatureScheme
-    send_psk: spec.Bool
+    send_psk: tls13.spec.Bool
     tickets: B32SeqTicketInfo
     psk_modes: B8SeqPskKeyExchangeMode
     send_time: MaybeUint64
-    send_ech: spec.Bool
+    send_ech: tls13.spec.Bool
     ech_configs: B16SeqECHConfig
 
     def replace(self, send_sni:bool|None=None, ciphers:Iterable[int|CipherSuite]|None=None, kex_shares:Iterable[int|NamedGroup]|None=None, kex_groups:Iterable[int|NamedGroup]|None=None, sig_algs:Iterable[int|SignatureScheme]|None=None, send_psk:bool|None=None, tickets:Iterable[tuple[bytes,bytes,int|CipherSuite,Iterable[int|PskKeyExchangeMode],int,int,int]]|None=None, psk_modes:Iterable[int|PskKeyExchangeMode]|None=None, send_time:int|None|None=None, send_ech:bool|None=None, ech_configs:Iterable[ECHConfigVariant]|None=None) -> Self:
-        return type(self)((self.send_sni if send_sni is None else spec.Bool.create(send_sni)), (self.ciphers if ciphers is None else B8SeqCipherSuite.create(ciphers)), (self.kex_shares if kex_shares is None else B16SeqNamedGroup.create(kex_shares)), (self.kex_groups if kex_groups is None else B16SeqNamedGroup.create(kex_groups)), (self.sig_algs if sig_algs is None else B16SeqSignatureScheme.create(sig_algs)), (self.send_psk if send_psk is None else spec.Bool.create(send_psk)), (self.tickets if tickets is None else B32SeqTicketInfo.create(tickets)), (self.psk_modes if psk_modes is None else B8SeqPskKeyExchangeMode.create(psk_modes)), (self.send_time if send_time is None else MaybeUint64.create(send_time)), (self.send_ech if send_ech is None else spec.Bool.create(send_ech)), (self.ech_configs if ech_configs is None else B16SeqECHConfig.create(ech_configs)))
+        return type(self)((self.send_sni if send_sni is None else tls13.spec.Bool.create(send_sni)), (self.ciphers if ciphers is None else B8SeqCipherSuite.create(ciphers)), (self.kex_shares if kex_shares is None else B16SeqNamedGroup.create(kex_shares)), (self.kex_groups if kex_groups is None else B16SeqNamedGroup.create(kex_groups)), (self.sig_algs if sig_algs is None else B16SeqSignatureScheme.create(sig_algs)), (self.send_psk if send_psk is None else tls13.spec.Bool.create(send_psk)), (self.tickets if tickets is None else B32SeqTicketInfo.create(tickets)), (self.psk_modes if psk_modes is None else B8SeqPskKeyExchangeMode.create(psk_modes)), (self.send_time if send_time is None else MaybeUint64.create(send_time)), (self.send_ech if send_ech is None else tls13.spec.Bool.create(send_ech)), (self.ech_configs if ech_configs is None else B16SeqECHConfig.create(ech_configs)))
 
     @classmethod
     def create(cls,send_sni:bool,ciphers:Iterable[int|CipherSuite],kex_shares:Iterable[int|NamedGroup],kex_groups:Iterable[int|NamedGroup],sig_algs:Iterable[int|SignatureScheme],send_psk:bool,tickets:Iterable[tuple[bytes,bytes,int|CipherSuite,Iterable[int|PskKeyExchangeMode],int,int,int]],psk_modes:Iterable[int|PskKeyExchangeMode],send_time:int|None,send_ech:bool,ech_configs:Iterable[ECHConfigVariant]) -> Self:
-        return cls(send_sni=spec.Bool.create(send_sni), ciphers=B8SeqCipherSuite.create(ciphers), kex_shares=B16SeqNamedGroup.create(kex_shares), kex_groups=B16SeqNamedGroup.create(kex_groups), sig_algs=B16SeqSignatureScheme.create(sig_algs), send_psk=spec.Bool.create(send_psk), tickets=B32SeqTicketInfo.create(tickets), psk_modes=B8SeqPskKeyExchangeMode.create(psk_modes), send_time=MaybeUint64.create(send_time), send_ech=spec.Bool.create(send_ech), ech_configs=B16SeqECHConfig.create(ech_configs))
+        return cls(send_sni=tls13.spec.Bool.create(send_sni), ciphers=B8SeqCipherSuite.create(ciphers), kex_shares=B16SeqNamedGroup.create(kex_shares), kex_groups=B16SeqNamedGroup.create(kex_groups), sig_algs=B16SeqSignatureScheme.create(sig_algs), send_psk=tls13.spec.Bool.create(send_psk), tickets=B32SeqTicketInfo.create(tickets), psk_modes=B8SeqPskKeyExchangeMode.create(psk_modes), send_time=MaybeUint64.create(send_time), send_ech=tls13.spec.Bool.create(send_ech), ech_configs=B16SeqECHConfig.create(ech_configs))
 
     def uncreate(self) -> tuple[bool, Iterable[int|CipherSuite], Iterable[int|NamedGroup], Iterable[int|NamedGroup], Iterable[int|SignatureScheme], bool, Iterable[tuple[bytes,bytes,int|CipherSuite,Iterable[int|PskKeyExchangeMode],int,int,int]], Iterable[int|PskKeyExchangeMode], int|None, bool, Iterable[ECHConfigVariant]]:
         return (self.send_sni.uncreate(), self.ciphers.uncreate(), self.kex_shares.uncreate(), self.kex_groups.uncreate(), self.sig_algs.uncreate(), self.send_psk.uncreate(), self.tickets.uncreate(), self.psk_modes.uncreate(), self.send_time.uncreate(), self.send_ech.uncreate(), self.ech_configs.uncreate())

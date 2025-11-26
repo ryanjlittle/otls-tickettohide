@@ -8,10 +8,8 @@ from typing import Iterable, override
 
 from cryptography.hazmat.primitives.hashes import SHA256, Hash
 
-from proof_common import ProverError
-from proof_spec import ClientHelloValues
-from spec import force_write, UnpackError, LimitReader
-from tls13_spec import Version, \
+from tls13.spec import force_write, UnpackError, LimitReader
+from tls13.tls13_spec import Version, \
     CipherSuite, ClientOptions, NamedGroup, ClientHelloHandshake, KeyShareClientExtension, \
     SupportedGroupsClientExtension, SignatureAlgorithmsClientExtension, SupportedVersionsClientExtension, \
     PskKeyExchangeModesClientExtension, GenericClientExtension, ExtensionTypes, EncryptedClientHelloClientExtension, \
@@ -19,15 +17,18 @@ from tls13_spec import Version, \
     ClientExtensionVariant, ECHConfigVariant, ServerNameClientExtension, ServerHelloHandshake, \
     KeyShareServerExtension, SupportedVersionsServerExtension, PreSharedKeyServerExtension, HandshakeTypes, ContentType, \
     ClientStates, EncryptedExtensionsHandshake, FinishedHandshake, Record
-from tls_client import ClientHandshake, _ChelloExtensions, connect_client
-from tls_common import TlsError, TlsTODO, logger
-from tls_crypto import get_kex_alg, DEFAULT_SIGNATURE_SCHEMES, get_hash_alg, \
+from tls13.tls_client import ClientHandshake, _ChelloExtensions, connect_client
+from tls13.tls_common import TlsError, TlsTODO, logger
+from tls13.tls_crypto import get_kex_alg, DEFAULT_SIGNATURE_SCHEMES, get_hash_alg, \
     get_cipher_alg, DEFAULT_KEX_MODES, StreamCipher
-from tls_ech import OuterPrep, server_accepts_ech
-from tls_keycalc import KeyCalc, HandshakeTranscript, TicketInfo, current_time_milli
-from tls_records import RecordWriter, DEFAULT_LEGACY_VERSION, DEFAULT_LEGACY_COMPRESSION, RecordTranscript, DataBuffer, \
+from tls13.tls_ech import OuterPrep, server_accepts_ech
+from tls13.tls_keycalc import KeyCalc, HandshakeTranscript, TicketInfo, current_time_milli
+from tls13.tls_records import RecordWriter, DEFAULT_LEGACY_VERSION, DEFAULT_LEGACY_COMPRESSION, RecordTranscript, DataBuffer, \
     RecordReader, InnerPlaintext, CCS_MESSAGE, get_header
-from tls_server import ServerID
+from tls13.tls_server import ServerID
+
+from tickettohide.proof_common import ProverError
+from tickettohide.proof_spec import ClientHelloValues
 
 DEFAULT_PROVER_CLIENT_OPTIONS = ClientOptions.create(
 send_sni = True,

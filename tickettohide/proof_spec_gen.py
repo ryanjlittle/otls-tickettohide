@@ -1,9 +1,9 @@
 from textwrap import dedent
 
-from spec import Raw, String
-from spec_gen import GenSpec, NamedConst, Select, Sequence, Struct, Bounded, Names, FORCE_RANK, SourceGen
-from tls13_spec import TicketInfo, NamedGroup, KeyShareEntry
-from util import kwdict
+from tls13.spec import Raw, String
+from tls13.spec_gen import GenSpec, NamedConst, Select, Sequence, Struct, Bounded, Names, FORCE_RANK, SourceGen
+from tls13.tls13_spec import TicketInfo, NamedGroup, KeyShareEntry
+from tls13.util import kwdict
 
 specs: dict[str, GenSpec] = kwdict(
     ClientHelloValues=Struct(
@@ -55,9 +55,9 @@ def write_to(fname: str) -> None:
         sg = SourceGen(fout, ns.assign())
         sg.preamble()
         fout.write(dedent("""\
-            import tls13_spec
-            from tls_common import *
-            from proof_common import *
+            import tls13.tls13_spec
+            from tls13.tls_common import *
+            from tickettohide.proof_common import *
         """))
         sg.write_all(ns.order())
         sg.epilogue()
@@ -66,4 +66,4 @@ def write_to(fname: str) -> None:
 
 
 if __name__ == '__main__':
-    write_to('proof_spec.py')
+    write_to('tickettohide/proof_spec.py')

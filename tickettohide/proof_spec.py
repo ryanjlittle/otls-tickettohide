@@ -5,13 +5,14 @@ from collections.abc import Iterable
 import enum
 import dataclasses
 from dataclasses import dataclass
-import spec
-from spec import *
-import tls13_spec
-from tls_common import *
-from proof_common import *
+import tls13
+from tls13 import spec
+from tls13.spec import *
+import tls13.tls13_spec
+from tls13.tls_common import *
+from tickettohide.proof_common import *
 
-class BoundedString(spec.String, Spec):
+class BoundedString(tls13.spec.String, Spec):
     _LENGTH_TYPES: tuple[type[spec._Integral],...]
 
     @override
@@ -72,7 +73,7 @@ class Uint8(spec._Integral):
 class B8String(BoundedString):
     _LENGTH_TYPES = (Uint8, )
 
-class BoundedRaw(spec.Raw, Spec):
+class BoundedRaw(tls13.spec.Raw, Spec):
     _LENGTH_TYPES: tuple[type[spec._Integral],...]
 
     @override
@@ -130,14 +131,14 @@ class BoundedRaw(spec.Raw, Spec):
 class B8Raw(BoundedRaw):
     _LENGTH_TYPES = (Uint8, )
 
-class SeqKeyShareEntry(spec._Sequence[tls13_spec.KeyShareEntry]):
-    _ITEM_TYPE = tls13_spec.KeyShareEntry
+class SeqKeyShareEntry(spec._Sequence[tls13.tls13_spec.KeyShareEntry]):
+    _ITEM_TYPE = tls13.tls13_spec.KeyShareEntry
 
     @classmethod
-    def create(cls, items: Iterable[tls13_spec.KeyShareEntry]) -> Self:
+    def create(cls, items: Iterable[tls13.tls13_spec.KeyShareEntry]) -> Self:
         return cls(item for item in items)
 
-    def uncreate(self) -> Iterable[tls13_spec.KeyShareEntry]:
+    def uncreate(self) -> Iterable[tls13.tls13_spec.KeyShareEntry]:
         for item in self:
             yield item
 
@@ -205,20 +206,20 @@ class B16SeqKeyShareEntry(BoundedSeqKeyShareEntry):
 @dataclass(frozen=True)
 class ClientHelloValues(spec._StructBase):
     _member_names: ClassVar[tuple[str,...]] = ('hostname','ticket_info','binder_key','kex_shares',)
-    _member_types: ClassVar[tuple[type[Spec],...]] = (B8String,tls13_spec.TicketInfo,B8Raw,B16SeqKeyShareEntry,)
+    _member_types: ClassVar[tuple[type[Spec],...]] = (B8String,tls13.tls13_spec.TicketInfo,B8Raw,B16SeqKeyShareEntry,)
     hostname: B8String
-    ticket_info: tls13_spec.TicketInfo
+    ticket_info: tls13.tls13_spec.TicketInfo
     binder_key: B8Raw
     kex_shares: B16SeqKeyShareEntry
 
-    def replace(self, hostname:str|None=None, ticket_info:tls13_spec.TicketInfo|None=None, binder_key:bytes|None=None, kex_shares:Iterable[tls13_spec.KeyShareEntry]|None=None) -> Self:
+    def replace(self, hostname:str|None=None, ticket_info:tls13.tls13_spec.TicketInfo|None=None, binder_key:bytes|None=None, kex_shares:Iterable[tls13.tls13_spec.KeyShareEntry]|None=None) -> Self:
         return type(self)((self.hostname if hostname is None else B8String.create(hostname)), (self.ticket_info if ticket_info is None else ticket_info), (self.binder_key if binder_key is None else B8Raw.create(binder_key)), (self.kex_shares if kex_shares is None else B16SeqKeyShareEntry.create(kex_shares)))
 
     @classmethod
-    def create(cls,hostname:str,ticket_info:tls13_spec.TicketInfo,binder_key:bytes,kex_shares:Iterable[tls13_spec.KeyShareEntry]) -> Self:
+    def create(cls,hostname:str,ticket_info:tls13.tls13_spec.TicketInfo,binder_key:bytes,kex_shares:Iterable[tls13.tls13_spec.KeyShareEntry]) -> Self:
         return cls(hostname=B8String.create(hostname), ticket_info=ticket_info, binder_key=B8Raw.create(binder_key), kex_shares=B16SeqKeyShareEntry.create(kex_shares))
 
-    def uncreate(self) -> tuple[str, tls13_spec.TicketInfo, bytes, Iterable[tls13_spec.KeyShareEntry]]:
+    def uncreate(self) -> tuple[str, tls13.tls13_spec.TicketInfo, bytes, Iterable[tls13.tls13_spec.KeyShareEntry]]:
         return (self.hostname.uncreate(), self.ticket_info, self.binder_key.uncreate(), self.kex_shares.uncreate())
 
 class ProverMsgTypes(enum.IntEnum):
@@ -267,28 +268,28 @@ class B16Raw(BoundedRaw):
 @dataclass(frozen=True)
 class KexSharesProverMsgData(spec._StructBase):
     _member_names: ClassVar[tuple[str,...]] = ('group','pubkey',)
-    _member_types: ClassVar[tuple[type[Spec],...]] = (tls13_spec.NamedGroup,B16Raw,)
-    group: tls13_spec.NamedGroup
+    _member_types: ClassVar[tuple[type[Spec],...]] = (tls13.tls13_spec.NamedGroup,B16Raw,)
+    group: tls13.tls13_spec.NamedGroup
     pubkey: B16Raw
 
-    def replace(self, group:tls13_spec.NamedGroup|None=None, pubkey:bytes|None=None) -> Self:
+    def replace(self, group:tls13.tls13_spec.NamedGroup|None=None, pubkey:bytes|None=None) -> Self:
         return type(self)((self.group if group is None else group), (self.pubkey if pubkey is None else B16Raw.create(pubkey)))
 
     @classmethod
-    def create(cls,group:tls13_spec.NamedGroup,pubkey:bytes) -> Self:
+    def create(cls,group:tls13.tls13_spec.NamedGroup,pubkey:bytes) -> Self:
         return cls(group=group, pubkey=B16Raw.create(pubkey))
 
-    def uncreate(self) -> tuple[tls13_spec.NamedGroup, bytes]:
+    def uncreate(self) -> tuple[tls13.tls13_spec.NamedGroup, bytes]:
         return (self.group, self.pubkey.uncreate())
 
 class SeqKexSharesProverMsgData(spec._Sequence[KexSharesProverMsgData]):
     _ITEM_TYPE = KexSharesProverMsgData
 
     @classmethod
-    def create(cls, items: Iterable[tuple[tls13_spec.NamedGroup,bytes]]) -> Self:
+    def create(cls, items: Iterable[tuple[tls13.tls13_spec.NamedGroup,bytes]]) -> Self:
         return cls(KexSharesProverMsgData.create(*item) for item in items)
 
-    def uncreate(self) -> Iterable[tuple[tls13_spec.NamedGroup,bytes]]:
+    def uncreate(self) -> Iterable[tuple[tls13.tls13_spec.NamedGroup,bytes]]:
         for item in self:
             yield item.uncreate()
 
@@ -354,10 +355,10 @@ class SeqB16SeqKexSharesProverMsgData(spec._Sequence[B16SeqKexSharesProverMsgDat
     _ITEM_TYPE = B16SeqKexSharesProverMsgData
 
     @classmethod
-    def create(cls, items: Iterable[Iterable[tuple[tls13_spec.NamedGroup,bytes]]]) -> Self:
+    def create(cls, items: Iterable[Iterable[tuple[tls13.tls13_spec.NamedGroup,bytes]]]) -> Self:
         return cls(B16SeqKexSharesProverMsgData.create(item) for item in items)
 
-    def uncreate(self) -> Iterable[Iterable[tuple[tls13_spec.NamedGroup,bytes]]]:
+    def uncreate(self) -> Iterable[Iterable[tuple[tls13.tls13_spec.NamedGroup,bytes]]]:
         for item in self:
             yield item.uncreate()
 
@@ -425,10 +426,10 @@ class KexSharesProverMsg(spec._SpecificSelectee[ProverMsgTypes, B16SeqB16SeqKexS
     _SELECTOR = ProverMsgTypes.KEX_SHARES
 
     @classmethod
-    def create(cls, items:Iterable[Iterable[tuple[tls13_spec.NamedGroup,bytes]]]) -> Self:
+    def create(cls, items:Iterable[Iterable[tuple[tls13.tls13_spec.NamedGroup,bytes]]]) -> Self:
         return cls(data=B16SeqB16SeqKexSharesProverMsgData.create(items))
 
-    def uncreate(self) -> Iterable[Iterable[tuple[tls13_spec.NamedGroup,bytes]]]:
+    def uncreate(self) -> Iterable[Iterable[tuple[tls13.tls13_spec.NamedGroup,bytes]]]:
         return self.data.uncreate()
 
     def parent(self) -> 'ProverMsg':
@@ -461,10 +462,10 @@ class SeqClientHelloValues(spec._Sequence[ClientHelloValues]):
     _ITEM_TYPE = ClientHelloValues
 
     @classmethod
-    def create(cls, items: Iterable[tuple[str,tls13_spec.TicketInfo,bytes,Iterable[tls13_spec.KeyShareEntry]]]) -> Self:
+    def create(cls, items: Iterable[tuple[str,tls13.tls13_spec.TicketInfo,bytes,Iterable[tls13.tls13_spec.KeyShareEntry]]]) -> Self:
         return cls(ClientHelloValues.create(*item) for item in items)
 
-    def uncreate(self) -> Iterable[tuple[str,tls13_spec.TicketInfo,bytes,Iterable[tls13_spec.KeyShareEntry]]]:
+    def uncreate(self) -> Iterable[tuple[str,tls13.tls13_spec.TicketInfo,bytes,Iterable[tls13.tls13_spec.KeyShareEntry]]]:
         for item in self:
             yield item.uncreate()
 
@@ -532,10 +533,10 @@ class TicketsVerifierMsg(spec._SpecificSelectee[VerifierMsgTypes, B16SeqClientHe
     _SELECTOR = VerifierMsgTypes.TICKETS
 
     @classmethod
-    def create(cls, items:Iterable[tuple[str,tls13_spec.TicketInfo,bytes,Iterable[tls13_spec.KeyShareEntry]]]) -> Self:
+    def create(cls, items:Iterable[tuple[str,tls13.tls13_spec.TicketInfo,bytes,Iterable[tls13.tls13_spec.KeyShareEntry]]]) -> Self:
         return cls(data=B16SeqClientHelloValues.create(items))
 
-    def uncreate(self) -> Iterable[tuple[str,tls13_spec.TicketInfo,bytes,Iterable[tls13_spec.KeyShareEntry]]]:
+    def uncreate(self) -> Iterable[tuple[str,tls13.tls13_spec.TicketInfo,bytes,Iterable[tls13.tls13_spec.KeyShareEntry]]]:
         return self.data.uncreate()
 
     def parent(self) -> 'VerifierMsg':

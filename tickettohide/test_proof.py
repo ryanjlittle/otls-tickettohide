@@ -1,3 +1,4 @@
+import base64
 import json
 import socket
 import socket
@@ -5,20 +6,20 @@ import threading
 from random import Random, SystemRandom
 from time import sleep
 
-import tls_common
-from https_client import http_get_req
-from https_server import HttpHandler
-from prover import Prover
-from prover_crypto import ProverSecrets
-from tls13_spec import ServerSecrets, ClientHelloHandshake, ClientOptions, NamedGroup, CipherSuite
-from tls_client import build_client
-from tls_common import *
-from tls_crypto import gen_server_secrets, DEFAULT_SIGNATURE_SCHEMES, DEFAULT_KEX_MODES
-from tls_keycalc import ServerTicketer
-from tls_records import CloseNotifyException
-from tls_server import ServerID, Server, _ServerThread
-from verifier import Verifier
+import tls13.tls_common
+from tls13.https_client import http_get_req
+from tls13.https_server import HttpHandler
+from tls13.tls13_spec import ServerSecrets, ClientHelloHandshake, ClientOptions, NamedGroup, CipherSuite
+from tls13.tls_client import build_client
+from tls13.tls_common import *
+from tls13.tls_crypto import gen_server_secrets, DEFAULT_SIGNATURE_SCHEMES, DEFAULT_KEX_MODES
+from tls13.tls_keycalc import ServerTicketer
+from tls13.tls_records import CloseNotifyException
+from tls13.tls_server import ServerID, Server, _ServerThread
 
+from tickettohide.verifier import Verifier
+from tickettohide.prover import Prover
+from tickettohide.prover_crypto import ProverSecrets
 
 CLIENT_OPTIONS = ClientOptions.create(
 send_sni = True,
@@ -57,8 +58,8 @@ class ProofTest:
             thread.join()
 
     def run_on_real_server(self):
-        self.server_ids = [ServerID(hostname='test.defo.ie', port=443), ServerID(hostname='test.defo.ie', port=443)]
-        #self.server_ids = [ServerID(hostname='interclip.app', port=443)]
+        self.server_ids = [ServerID(hostname='test.defo.ie', port=443), ServerID(hostname='tls-ech.dev', port=443)]
+        #self.server_ids = [ServerID(hostname='www.w3.org', port=443)]
 
         self.start_prover()
         self.start_verifier()
@@ -113,6 +114,10 @@ class ProofTest:
             index = 0,
             queries = [http_get_req(server.hostname, '/') for server in self.server_ids],
         )
+        # with open('secrets.txt', 'wb') as f:
+        #     f.write(b'\x00')
+        # with open('secrets.txt', 'a') as f:
+        #     f.writelines(['\n' + base64.b64encode(x).decode("ascii") for x in prover_secrets.queries])
 
         def _run_prover(server_ids, secrets):
             with Prover(self.server_ids, prover_secrets, rseed=self.rseed) as prover:
@@ -225,7 +230,7 @@ def test_ech_with_ticket(hostname, port):
         response = client0.recv(2 ** 16)
     assert client0.ech_configs
     assert client0.tickets
-    print(f'got tickets and ech configs: {response}')
+    print(f'successfully obtained {len(client0.tickets)} tickets and ech configs: {response}')
 
     # Ticket, no ECH
     options = CLIENT_OPTIONS.replace(send_ech=False, send_psk=True, tickets=[client0.tickets[0].uncreate()])
@@ -322,7 +327,7 @@ if __name__ == '__main__':
     num_servers = 2
     rseed = 0
 
-    # test_ech_with_ticket('test.defo.ie', 443)
+    #test_ech_with_ticket('cloudflare-ech.com', 443)
 
     test = ProofTest(num_servers, rseed=rseed)
 

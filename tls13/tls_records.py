@@ -7,10 +7,9 @@ from queue import ShutDown
 from typing import override, ClassVar, BinaryIO, Self
 import socket
 
-from tls_common import *
-import spec
-from spec import force_write, UnpackError, Fill, Raw, LimitReader
-from tls13_spec import (
+from tls13.tls_common import *
+from tls13.spec import force_write, UnpackError, Fill, Raw, LimitReader
+from tls13.tls13_spec import (
     Record,
     ContentType,
     RecordHeader,
@@ -21,8 +20,8 @@ from tls13_spec import (
     Alert,
     CipherSuite, AlertLevel, AlertDescription, ClientStates,
 )
-from tls_crypto import StreamCipher
-from tls_keycalc import KeyCalc, KeyCalcMissing
+from tls13.tls_crypto import StreamCipher
+from tls13.tls_keycalc import KeyCalc, KeyCalcMissing
 
 HOST_NAME_TYPE = 0 # for SNI extension
 DEFAULT_LEGACY_VERSION = Version.TLS_1_2

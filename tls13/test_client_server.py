@@ -2,20 +2,19 @@
 
 """Tests the TLS client and server simultaneously over port 12345."""
 
-from collections.abc import Iterable, Iterator
-from typing import Any
+import argparse
+import logging
 import socket
+import traceback
+from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor, Executor
 from contextlib import contextmanager
-import argparse
-import traceback
-import logging
 
-from tls13_spec import ClientOptions, TicketInfo
-from tls_client import DEFAULT_CLIENT_OPTIONS, connect_client
-from tls_server import Server
-from tls_crypto import gen_server_secrets
-from tls_keycalc import ServerTicketer
+from tls13.tls13_spec import ClientOptions, TicketInfo
+from tls13.tls_client import DEFAULT_CLIENT_OPTIONS, connect_client
+from tls13.tls_crypto import gen_server_secrets
+from tls13.tls_keycalc import ServerTicketer
+from tls13.tls_server import Server
 
 logger = logging.getLogger('test_client_server')
 

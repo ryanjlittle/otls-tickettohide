@@ -1,13 +1,11 @@
-from typing import Self, BinaryIO, TextIO, get_args, Iterable, Protocol, Any, dataclass_transform, ClassVar, override
-from dataclasses import dataclass, field
-import dataclasses
 from abc import ABC, abstractmethod
-from io import BytesIO
-from sys import stdout
+from dataclasses import dataclass, field
 from enum import IntEnum
-import functools
+from io import BytesIO
 from textwrap import dedent
-from util import pformat
+from typing import Self, BinaryIO, Iterable, Any, ClassVar, override
+
+from tls13.util import pformat
 
 type Json = int | float | str | bool | None | list[Json] | dict[str, Json]
 

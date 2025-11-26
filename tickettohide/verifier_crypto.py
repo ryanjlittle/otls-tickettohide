@@ -1,15 +1,16 @@
 from concurrent.futures import ThreadPoolExecutor
 from random import SystemRandom, Random
 
-from https_client import http_get_req
-from proof_common import VerifierError
-from prover_crypto import DEFAULT_PROVER_CLIENT_OPTIONS
-from tls13_spec import TicketInfo, ClientOptions, NamedGroup, KeyShareEntry
-from tls_client import connect_client
-from tls_common import TlsError, TlsTODO
-from tls_crypto import get_kex_alg
-from tls_keycalc import KeyCalc, HandshakeTranscript
-from tls_server import ServerID
+from tls13.https_client import http_get_req
+from tls13.tls13_spec import TicketInfo, ClientOptions, NamedGroup, KeyShareEntry
+from tls13.tls_client import connect_client
+from tls13.tls_common import TlsError, TlsTODO
+from tls13.tls_crypto import get_kex_alg
+from tls13.tls_keycalc import KeyCalc, HandshakeTranscript
+from tls13.tls_server import ServerID
+
+from tickettohide.proof_common import VerifierError
+from tickettohide.prover_crypto import DEFAULT_PROVER_CLIENT_OPTIONS
 
 
 class VerifierTls:

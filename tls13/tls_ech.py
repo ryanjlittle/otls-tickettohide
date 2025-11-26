@@ -4,9 +4,9 @@ from dataclasses import dataclass, field
 from functools import cached_property
 import enum
 
-from spec import LimitReader, UnpackError
-from tls_common import *
-from tls13_spec import (
+from tls13.spec import LimitReader, UnpackError
+from tls13.tls_common import *
+from tls13.tls13_spec import (
     HandshakeTypes,
     ClientHelloHandshake,
     ClientHelloHandshakeData,
@@ -29,7 +29,7 @@ from tls13_spec import (
     EchSecrets,
     EchKeyConfig,
 )
-from tls_crypto import (
+from tls13.tls_crypto import (
     HpkeAlg,
     ContextS,
     get_hpke_alg,
@@ -37,7 +37,7 @@ from tls_crypto import (
     hkdf_extract,
     hkdf_expand_label,
 )
-from tls_keycalc import HandshakeTranscript
+from tls13.tls_keycalc import HandshakeTranscript
 
 class EchType(enum.Enum):
     NONE  = enum.auto()

@@ -8,9 +8,9 @@ Be sure to download the example data files first by running
 """
 
 from pathlib import Path
-from spec import LimitReader
-from tls13_spec import ClientSecrets, ClientHelloHandshake, Record
-from tls_client import ClientConnection
+from tls13.spec import LimitReader
+from tls13.tls13_spec import ClientSecrets, ClientHelloHandshake, Record
+from tls13.tls_client import ClientConnection
 from io import BytesIO
 import argparse
 import logging

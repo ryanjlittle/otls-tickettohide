@@ -9,8 +9,8 @@ from random import Random
 from secrets import SystemRandom
 from typing import ClassVar
 
-from spec import UnpackError
-from tls13_spec import (
+from tls13.spec import UnpackError
+from tls13.tls13_spec import (
     ClientStates,
     ClientSecrets,
     ClientOptions,
@@ -59,8 +59,8 @@ from tls13_spec import (
     ECHConfigVariant,
     Draft24ECHConfig,
 )
-from tls_common import *
-from tls_crypto import (
+from tls13.tls_common import *
+from tls13.tls_crypto import (
     get_kex_alg,
     get_sig_alg,
     get_hash_alg,
@@ -72,9 +72,9 @@ from tls_crypto import (
     DEFAULT_CIPHER_SUITES,
     DEFAULT_HPKE_CSUITES,
 )
-from tls_ech import OuterPrep, server_accepts_ech
-from tls_keycalc import KeyCalc, HandshakeTranscript, PskExtFactory
-from tls_records import (
+from tls13.tls_ech import OuterPrep, server_accepts_ech
+from tls13.tls_keycalc import KeyCalc, HandshakeTranscript, PskExtFactory
+from tls13.tls_records import (
     RecordTranscript,
     RecordReader,
     RecordWriter,

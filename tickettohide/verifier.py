@@ -1,14 +1,15 @@
 from enum import IntEnum
 
-from mpc_tls import VerifierMPC
-from proof_common import VerifierError
-from proof_connections import ProverConnection
-from proof_spec import TicketsVerifierMsg, KexSharesProverMsg
-from prover_crypto import DEFAULT_PROVER_CLIENT_OPTIONS
-from tls13_spec import ClientOptions
-from tls_common import *
-from tls_server import ServerID
-from verifier_crypto import VerifierCryptoManager
+from tls13.tls13_spec import ClientOptions
+from tls13.tls_common import *
+from tls13.tls_server import ServerID
+
+from tickettohide.mpc_tls import VerifierMPC
+from tickettohide.proof_common import VerifierError
+from tickettohide.proof_connections import ProverConnection
+from tickettohide.proof_spec import TicketsVerifierMsg, KexSharesProverMsg
+from tickettohide.prover_crypto import DEFAULT_PROVER_CLIENT_OPTIONS
+from tickettohide.verifier_crypto import VerifierCryptoManager
 
 
 class VerifierState(IntEnum):

@@ -10,8 +10,8 @@ from random import Random, SystemRandom
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 
-from spec import UnpackError
-from tls13_spec import (
+from tls13.spec import UnpackError
+from tls13.tls13_spec import (
     ExtensionTypes,
     HandshakeTypes,
     CipherSuite,
@@ -26,8 +26,8 @@ from tls13_spec import (
     ClientExtensionVariant,
     HandshakeVariant,
 )
-from tls_common import *
-from tls_crypto import (
+from tls13.tls_common import *
+from tls13.tls_crypto import (
     get_hash_alg,
     hkdf_extract,
     hkdf_expand_label,
@@ -36,7 +36,7 @@ from tls_crypto import (
     HashObject,
     DEFAULT_KEX_MODES,
 )
-from util import pformat
+from tls13.util import pformat
 
 def current_time_milli() -> int:
     return int(time.time() * 1000)

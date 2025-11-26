@@ -4,7 +4,7 @@ from functools import cached_property
 from dataclasses import dataclass, field
 from collections import Counter
 from textwrap import indent, dedent
-from util import (
+from tls13.util import (
     flyweight,
     write_tuple,
     exact_lstrip,
@@ -12,7 +12,7 @@ from util import (
     camel_case,
     OneToOne,
 )
-from spec import Spec
+from tls13.spec import Spec
 
 type Nested = 'GenSpec' | type[Spec] | str
 
@@ -942,8 +942,9 @@ class SourceGen:
             import enum
             import dataclasses
             from dataclasses import dataclass
-            import spec
-            from spec import *
+            import tls13
+            from tls13 import spec
+            from tls13.spec import *
             '''))
 
     def write(self, spec: GenSpec) -> None:

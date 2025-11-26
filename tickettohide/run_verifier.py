@@ -1,8 +1,10 @@
 import argparse
+import time
 
-from tls_common import *
-from tls_server import ServerID
-from verifier import Verifier
+from tls13.tls_common import *
+from tls13.tls_server import ServerID
+
+from tickettohide.verifier import Verifier
 
 
 def main():
@@ -24,7 +26,10 @@ def main():
 
 
     with Verifier(server_ids, args.prover_host, args.main_port, args.mpc_port, rseed=args.rseed) as verifier:
+        start = time.perf_counter()
         verifier.run()
+        stop = time.perf_counter()
+        print(f'Elapsed time: {stop - start:.6f}')
 
 if __name__ == '__main__':
     main()

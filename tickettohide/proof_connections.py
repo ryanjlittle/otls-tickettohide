@@ -5,14 +5,11 @@ import socket
 from io import BufferedReader, BufferedWriter
 from typing import BinaryIO
 
-from proof_common import *
-from proof_spec import ProverMsgVariant, VerifierMsgVariant, ProverMsg, VerifierMsg
-from spec import UnpackError, Spec
-from tls13_spec import Record, ContentType
-from tls_client import connect_client
-from tls_common import *
-from tls_records import RecordReader
+from tls13.spec import UnpackError
+from tls13.tls_common import *
 
+from tickettohide.proof_common import *
+from tickettohide.proof_spec import ProverMsgVariant, VerifierMsgVariant, ProverMsg, VerifierMsg
 
 class MsgWriter(ABC):
     recipient: str

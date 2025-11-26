@@ -2,15 +2,15 @@
 
 from typing import Iterable
 from io import BytesIO
-import spec
-from spec import Spec, Json
-from tls13_spec import *
-import util
-import tls_common
-import tls_crypto
-import tls_keycalc
-import tls_records
-import tls_client
+import tls13.spec
+from tls13.spec import Spec, Json
+from tls13.tls13_spec import *
+import tls13.util
+import tls13.tls_common
+import tls13.tls_crypto
+import tls13.tls_keycalc
+import tls13.tls_records
+import tls13.tls_client
 import argparse
 import logging
 
