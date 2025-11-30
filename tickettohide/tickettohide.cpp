@@ -59,10 +59,6 @@ void full_protocol(IO* io, IO* io_opt, COT<IO>* cot, int num_servers, int party)
             unsigned char* hs_sec_bytes = new unsigned char[HASH_LEN];
             hex_str_to_bytes(hs_sec_bytes, hs_sec_hex);
             hs_secs.push_back(hs_sec_bytes);
-            //delete[] hs_sec_bytes;
-
-            // cin >> hs_sec_hex;
-            // hs_secs.push_back((unsigned char*) hs_sec_hex.data());
         }
         hs->set_verifier_handshake_secrets(hs_secs);
         for (auto sec : hs_secs) {
@@ -245,23 +241,31 @@ void full_protocol(IO* io, IO* io_opt, COT<IO>* cot, int num_servers, int party)
     delete[] tag;
 }
 
-inline void parse_args(const char *const *arg, int *party, int *servers, int *port) {
-    *party = atoi (arg[1]);
-    *servers = atoi (arg[2]);
-    *port = atoi (arg[3]);
+inline void parse_args(const char *const *arg, int *party, int *servers,
+                       int *port, const char **address) {
+    *party = atoi(arg[1]);
+    *servers = atoi(arg[2]);
+    *port   = atoi(arg[3]);
+    if (arg[4]) {
+        *address = arg[4];
+    } else {
+        *address = "127.0.0.1";
+    }
 }
 
 
 int main(int argc, char** argv) {
     int port, party, num_servers;
-    parse_args(argv, &party, &num_servers, &port);
+    const char* address;
 
-    NetIO* io_opt = new NetIO(party == PROVER ? nullptr : "127.0.0.1", port + threads);
+    parse_args(argv, &party, &num_servers, &port, &address);
+
+    NetIO* io_opt = new NetIO(party == PROVER ? nullptr : address, port + threads);
 
     NetIO* io[threads];
     BoolIO<NetIO>* ios[threads];
     for (int i = 0; i < threads; i++) {
-        io[i] = new NetIO(party == PROVER ? nullptr : "127.0.0.1", port + i);
+        io[i] = new NetIO(party == PROVER ? nullptr : address, port + i);
         ios[i] = new BoolIO<NetIO>(io[i], party == PROVER);
     }
 

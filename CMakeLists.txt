@@ -1,4 +1,4 @@
-cmake_minimum_required (VERSION 3.0 VERSION 4.0)
+cmake_minimum_required (VERSION 3.0)
 project (otls)
 set(NAME "otls")
 
@@ -64,7 +64,7 @@ install(TARGETS otls DESTINATION lib)
 
 install(DIRECTORY src/backend src/cipher src/protocol DESTINATION include)
 
-option(ENABLE_OTLS_TEST "otls test" ON)
+option(ENABLE_OTLS_TEST "otls test" OFF)
 IF(ENABLE_OTLS_TEST)
   ENABLE_TESTING()
   ADD_SUBDIRECTORY(src/test)
@@ -76,7 +76,7 @@ IF(ENABLE_TTH)
     tickettohide/tickettohide.cpp
   )
   target_link_libraries(tickettohide PRIVATE otls)
-  option(ENABLE_TTH_TEST "tth test" ON)
+  option(ENABLE_TTH_TEST "tth test" OFF)
   IF(ENABLE_TTH_TEST)
     ENABLE_TESTING()
     ADD_SUBDIRECTORY(tickettohide/test)

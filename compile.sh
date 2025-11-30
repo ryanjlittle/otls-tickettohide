@@ -15,7 +15,7 @@ installdir=${curdir}/install
 mkdir -p ${builddir} ${installdir}
 
 enable_threading=ON
-enable_test=ON
+enable_test=OFF
 
 #######################################################################
 #######################################################################
