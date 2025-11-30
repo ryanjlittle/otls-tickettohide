@@ -45,8 +45,8 @@ class Verifier:
     def __init__(self,
                  servers: list[ServerID],
                  prover_host: str = 'localhost',
-                 prover_port: int = 9000,
-                 mpc_port: int = 9001,
+                 prover_port: int = 8000,
+                 mpc_port: int = 8001,
                  options: ClientOptions = DEFAULT_PROVER_CLIENT_OPTIONS,
                  rseed: int|None = None
         ) -> None:
