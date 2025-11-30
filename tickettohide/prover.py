@@ -50,8 +50,8 @@ class Prover:
                  servers: list[ServerID],
                  secrets: ProverSecrets,
                  hostname: str = 'localhost',
-                 port: int = 9000,
-                 mpc_port: int = 9001,
+                 port: int = 8000,
+                 mpc_port: int = 8001,
                  rseed: int|None = None,
                  ) -> None:
         self.servers = servers

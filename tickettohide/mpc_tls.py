@@ -9,7 +9,7 @@ class TlsMpc(ABC):
     port: int
     party: int
 
-    def __init__(self, num_servers: int, port: int=9001):
+    def __init__(self, num_servers: int, port: int=8001):
         self.num_servers = num_servers
         self.port = port
 

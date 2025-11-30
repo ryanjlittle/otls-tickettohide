@@ -11,10 +11,10 @@ def main():
     parser = argparse.ArgumentParser(description="Runs the verifier program")
 
     parser.add_argument("servers", help="File containing a list of server hostnames and ports")
-    parser.add_argument("prover_host", nargs="?", default="localhost", help="Prover hostname")
-    parser.add_argument("main_port", nargs="?", type=int, default=9000, help="Port for high-level communication with prover")
-    parser.add_argument("mpc_port", nargs="?", type=int, default=9001, help="Port for communicating with prover for MPC computations")
-    parser.add_argument("rseed", nargs="?", type=int, default=None, help="Random number generator seed")
+    parser.add_argument("-prover_host", nargs="?", default="localhost", help="Prover hostname")
+    parser.add_argument("-main_port", nargs="?", type=int, default=8000, help="Port for high-level communication with prover")
+    parser.add_argument("-mpc_port", nargs="?", type=int, default=8001, help="Port for communicating with prover for MPC computations")
+    parser.add_argument("-rseed", nargs="?", type=int, default=None, help="Random number generator seed")
 
     args = parser.parse_args()
 

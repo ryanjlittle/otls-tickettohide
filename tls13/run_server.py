@@ -57,11 +57,9 @@ class BasicServer:
 def main():
     parser = argparse.ArgumentParser(description="Runs a server")
 
-    parser.add_argument("port", type=int, nargs="?", default=8000, help="port to listen on")
-    parser.add_argument("hostname", nargs="?", type=str, default="localhost", help="hostname to listen on")
-    parser.add_argument("max_connections", nargs="?", type=int, default=3, help="close after this many connections")
-    parser.add_argument("rseed", nargs="?", type=int, default=None, help="Random number generator seed")
-
+    parser.add_argument("port", type=int, help="port to listen on")
+    parser.add_argument("-hostname", nargs="?", type=str, default="localhost", help="hostname to listen on")
+    parser.add_argument("-max_connections", nargs="?", type=int, default=3, help="close after this many connections")
 
     args = parser.parse_args()
 
