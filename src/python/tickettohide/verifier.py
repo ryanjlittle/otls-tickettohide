@@ -20,8 +20,9 @@ class VerifierState(IntEnum):
     MPC_HS_HKDF       = 4
     MPC_APP_HKDF      = 5
     MPC_ENC           = 6
-    FINALIZE          = 7
-    DONE              = 8
+    REVEAL_AND_PROVE  = 7
+    FINALIZE          = 8
+    DONE              = 9
 
     def __str__(self):
         return self.name
@@ -78,6 +79,7 @@ class Verifier:
             VerifierState.MPC_HS_HKDF       : self.twopc_handshake_hkdf,
             VerifierState.MPC_APP_HKDF      : self.twopc_application_hkdf,
             VerifierState.MPC_ENC           : self.twopc_encryption,
+            VerifierState.REVEAL_AND_PROVE  : self.reveal_and_prove,
             VerifierState.FINALIZE          : self.finalize,
         }
 
@@ -154,6 +156,11 @@ class Verifier:
 
         self.mpc_manager.compute_encryption()
 
+        self.increment_state()
+
+    def reveal_and_prove(self) -> None:
+        assert self.state == VerifierState.REVEAL_AND_PROVE
+        self.mpc_manager.reveal_and_prove()
         self.increment_state()
 
     def finalize(self) -> None:

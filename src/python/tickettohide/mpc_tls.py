@@ -49,6 +49,9 @@ class TlsMpc(ABC):
         if msg1 != "connected" or msg2 != "connected":
             raise RuntimeError("Connection failed")
 
+    def reveal_and_prove(self) -> None:
+        self.write_input("ok")
+
     def finish(self) -> int:
         # returns the exit code of the process
         return self.process.wait()

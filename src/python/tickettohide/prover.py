@@ -22,8 +22,9 @@ class ProverState(IntEnum):
     MPC_APP_HKDF      = 5
     MPC_ENC           = 6
     WAIT_RESPONSE     = 7
-    WAIT_KEY_SHARES   = 8
-    DONE              = 9
+    REVEAL_AND_PROVE  = 8
+    DECRYPT_ALL       = 9
+    DONE              = 10
 
     def __str__(self):
         return self.name
@@ -239,8 +240,15 @@ class Prover:
         # self.verifier_connection.send_msg(msg)
         self.increment_state()
 
-    def process_key_share(self) -> None:
-        assert self.state == ProverState.WAIT_KEY_SHARES
+    def reveal_and_prove(self) -> None:
+        assert self.state == ProverState.REVEAL_AND_PROVE
+        self.mpc_manager.reveal_and_prove()
+        client_key, client_iv, server_key, server_iv = self.mpc_manager.get_keys()
+        self.crypto_manager.set_application_keys(client_key, client_iv, server_key, server_iv)
+        self.increment_state()
+
+    def decrypt_all(self) -> None:
+        assert self.state == ProverState.DECRYPT_ALL
         # msg = self.verifier_connection.recv_msg()
         # if not isinstance(msg, AppKeySharesVerifierMsg):
         #     raise ProverError(f'received unexpected message type: {msg.typ}')
@@ -250,8 +258,6 @@ class Prover:
         # TODO: replace the shares with the real shares from the verifier's message (commented out above)
         # self.crypto_manager.reconstruct_application_keys(self.verifier_client_key_share, self.verifier_server_key_share)
 
-        client_key, client_iv, server_key, server_iv = self.mpc_manager.get_keys()
-        self.crypto_manager.set_application_keys(client_key, client_iv, server_key, server_iv)
         self.crypto_manager.decrypt_real_server_responses()
         logger.info('decryption of real server succeeded')
         for client in self.crypto_manager.clients:

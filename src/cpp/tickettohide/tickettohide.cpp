@@ -209,6 +209,13 @@ void full_protocol(IO* io, IO* io_opt, COT<IO>* cot, int num_servers, int party)
     *  all circuits correctly.
     * ======================================================================= */
 
+    // wait for prover and verifier ok to continue
+    string ok_msg;
+    cin >> ok_msg;
+    if (ok_msg != "ok") {
+        error("Received unexpected message (expected \"ok\")");
+    }
+
     switch_to_zk();
     PostRecordTTH<IO>* prd = new PostRecordTTH<IO>(io, hs, aead_c, num_servers, party);
     Integer tag_z0;
