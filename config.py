@@ -1,0 +1,2 @@
+DEBUG = True
+MPC_EXECUTABLE_PATH = ""
