@@ -8,6 +8,7 @@ RED="\033[0;31m"
 RESET="\033[0m"
 
 ROOT_DIR=$(pwd)
+export OPENSSL_ROOT_DIR=/usr/include/openssl
 
 if [ $# -ne 1 ]; then
     echo "Usage: $0 [debug|release]"
@@ -25,17 +26,16 @@ fi
 
 # Install and build primus-emp
 if [ -d "primus-emp" ]; then
-  echo -e "${YELLOW}Found existing primus-emp installation.${RESET}"
+  echo -e "${YELLOW}Found existing primus-emp installation, skipping compilation.${RESET}"
 else
   echo -e "${GREEN}Installing EMP toolkit (Primus lab fork)...${RESET}"
   git clone https://github.com/primus-labs/primus-emp.git
+  cd primus-emp
+  git checkout 72f3f4f5a5c22a1cd008b27b233c4021f733b978
+  echo -e "${GREEN}Compiling EMP toolkit...${RESET}"
+  bash compile.sh -$BUILD_TYPE
+  cd ..
 fi
-cd primus-emp
-git checkout 72f3f4f5a5c22a1cd008b27b233c4021f733b978
-export OPENSSL_ROOT_DIR=/usr/include/openssl
-echo -e "${GREEN}Compiling EMP toolkit...${RESET}"
-bash compile.sh -$BUILD_TYPE
-cd ..
 
 # Compile C++ code
 echo -e "${GREEN}Compiling project C++ code...${RESET}"
