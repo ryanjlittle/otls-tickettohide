@@ -4,6 +4,7 @@
 #include "emp-zk/emp-zk.h"
 #include "handshake_13.h"
 #include "post_record_tth.h"
+#include "tth_utils.h"
 #include "protocol/com_conv.h"
 
 #include <iostream>
@@ -269,7 +270,7 @@ int main(int argc, char** argv) {
         ios[i] = new BoolIO<NetIO>(io[i], party == PROVER);
     }
 
-    auto start = emp::clock_start();
+    // auto start = emp::clock_start();
     setup_protocol<NetIO>(io[0], ios, threads, party);
 
 

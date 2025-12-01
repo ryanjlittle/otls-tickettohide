@@ -1,4 +1,6 @@
 #!/bin/bash
+set -e
+
 if [ $# -lt 1 ]; then
     echo "Usage: $0 \${path_to_primus_emp} \${build_type}"
     exit 1;
@@ -12,21 +14,13 @@ primus_emp_installdir=${primus_emp_dir}/install
 curdir=$(pwd)
 builddir=${curdir}/build
 installdir=${curdir}/install
+sourcedir=${curdir}/src/cpp
 mkdir -p ${builddir} ${installdir}
 
 enable_threading=ON
 enable_test=OFF
-
-#######################################################################
-#######################################################################
-
-# ######################
 repo=otls
-# ######################
 
-#
-#
-# ######################
 echo "compile ${repo}"
 repo_dir=${curdir}
 mkdir -p ${builddir}

@@ -7,7 +7,6 @@
 #include <list>
 #include "sha256.h"
 #include "utils.h"
-#include "tickettohide/tth_utils.h"
 
 using namespace std;
 using namespace emp;
