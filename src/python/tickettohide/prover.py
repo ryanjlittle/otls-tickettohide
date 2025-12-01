@@ -82,15 +82,16 @@ class Prover:
     @property
     def handler(self) -> dict[ProverState, Callable]:
         return {
-            ProverState.INIT                : self.preprocess,
-            ProverState.GET_ECH             : self.get_ech_configs,
-            ProverState.WAIT_TICKETS        : self.process_tickets,
-            ProverState.WAIT_SH             : self.process_sh,
-            ProverState.MPC_HS_HKDF    : self.twopc_handshake_hkdf,
-            ProverState.MPC_APP_HKDF   : self.twopc_application_hkdf,
-            ProverState.MPC_ENC        : self.twopc_encryption,
-            ProverState.WAIT_RESPONSE       : self.process_response,
-            ProverState.WAIT_KEY_SHARES     : self.process_key_share,
+            ProverState.INIT             : self.preprocess,
+            ProverState.GET_ECH          : self.get_ech_configs,
+            ProverState.WAIT_TICKETS     : self.process_tickets,
+            ProverState.WAIT_SH          : self.process_sh,
+            ProverState.MPC_HS_HKDF      : self.twopc_handshake_hkdf,
+            ProverState.MPC_APP_HKDF     : self.twopc_application_hkdf,
+            ProverState.MPC_ENC          : self.twopc_encryption,
+            ProverState.WAIT_RESPONSE    : self.process_response,
+            ProverState.REVEAL_AND_PROVE : self.reveal_and_prove,
+            ProverState.DECRYPT_ALL      : self.decrypt_all,
         }
 
 

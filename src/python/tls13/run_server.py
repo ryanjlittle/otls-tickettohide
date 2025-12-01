@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+from time import perf_counter
 
 from tls13.tls_records import CloseNotifyException
 from tls13.tls_server import *
