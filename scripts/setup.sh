@@ -7,17 +7,19 @@ YELLOW="\033[0;33m"
 RED="\033[0;31m"
 RESET="\033[0m"
 
-ROOT_DIR=$(pwd)
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd $PROJECT_ROOT
+
 export OPENSSL_ROOT_DIR=/usr/include/openssl
 
 if [ $# -ne 1 ]; then
-    echo "Usage: $0 [debug|release]"
+    echo -e "${RED}Usage: $0 [-debug|-release]${RESET}"
     exit 1;
 fi
 
-if [ "$1" == "debug" ]; then
+if [ "$1" == "-debug" ]; then
   BUILD_TYPE="Debug"
-elif [ "$1" == "release" ]; then
+elif [ "$1" == "-release" ]; then
   BUILD_TYPE="Release";
 else
   echo -e "${RED}Error: build type must be 'debug' or 'release'${RESET}"
@@ -59,7 +61,7 @@ else
 fi
 cat > config.py <<EOF
 DEBUG=${DEBUG_STR}
-MPC_EXECUTABLE_PATH="${ROOT_DIR}/build/bin/tickettohide"
+MPC_EXECUTABLE_PATH="${PROJECT_ROOT}/build/bin/tickettohide"
 EOF
 
 echo -e "${GREEN}Generating specification code files...${RESET}"
