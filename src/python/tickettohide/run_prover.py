@@ -13,6 +13,7 @@ def main():
 
     parser.add_argument("servers", help="File containing a list of server hostnames and ports")
     parser.add_argument("secrets", help="File containing the index of the real server and all secret queries")
+    parser.add_argument("benchmark_file", nargs="?", help="CSV file for output results")
     parser.add_argument("-main_port", nargs="?", type=int, default=8000, help="Port for high-level communication with verifier")
     parser.add_argument("-mpc_port", nargs="?", type=int, default=8001, help="Port for communicating with verifier for MPC computations")
     parser.add_argument("-rseed", nargs="?", type=int, default=None, help="Random number generator seed")
@@ -26,7 +27,7 @@ def main():
             server_ids.append(ServerID(hostname, int(port)))
 
     with open(args.secrets, "rb") as f:
-        index = int.from_bytes(f.readline().strip())
+        index = int(f.readline().strip())
         queries = [base64.b64decode(s) for s in f.readlines()]
 
     prover_secrets = ProverSecrets(
@@ -34,7 +35,7 @@ def main():
         queries=queries
     )
 
-    with Prover(server_ids, prover_secrets, port=args.main_port, mpc_port=args.mpc_port, rseed=args.rseed) as prover:
+    with Prover(server_ids, prover_secrets, benchmark_file=args.benchmark_file, port=args.main_port, mpc_port=args.mpc_port, rseed=args.rseed) as prover:
         start = time.perf_counter()
         prover.run()
         stop = time.perf_counter()

@@ -15,8 +15,6 @@ from tickettohide.proof_connections import VerifierConnection
 from tickettohide.proof_spec import TicketsVerifierMsg, KexSharesProverMsg
 from tickettohide.prover_crypto import ProverSecrets, ProverCryptoManager
 
-OUTPUT_CSV = "../../benchmarks/times.csv"
-
 class ProverState(IntEnum):
     INIT              = 0
     GET_ECH           = 1
@@ -43,18 +41,18 @@ class ProverState(IntEnum):
 class Prover:
     servers: list[ServerID]
     secrets: ProverSecrets
+    benchmark_file: str|None
     verifier_connection: VerifierConnection
     crypto_manager: ProverCryptoManager
     mpc_manager: ProverMPC
     state: ProverState = ProverState.INIT
     rseed: int|None = None
-    verifier_client_key_share: bytes # TODO: this is for testing only
-    verifier_server_key_share: bytes # TODO: this is for testing only
     perf_times: dict[str, float]
 
     def __init__(self,
                  servers: list[ServerID],
                  secrets: ProverSecrets,
+                 benchmark_file: str|None = None,
                  hostname: str = 'localhost',
                  port: int = 8000,
                  mpc_port: int = 8001,
@@ -62,6 +60,7 @@ class Prover:
                  ) -> None:
         self.servers = servers
         self.secrets = secrets
+        self.benchmark_file = benchmark_file
         self.rseed = rseed
         self.perf_times = dict()
         self.verifier_connection = VerifierConnection(hostname, port)
@@ -142,14 +141,15 @@ class Prover:
         print(f'  Total time:                {total_time:.8f} s')
 
         # Append row to CSV file
-        file_exists = os.path.isfile(OUTPUT_CSV)
-        row = [len(self.servers), ech_time, preproc_time, ticket_time, hellos_time, hs_mpc_time, app_mpc_time, enc_time, izk_time, req_res_time, local_time, total_time]
-        with open(OUTPUT_CSV, mode="a", newline="") as file:
-            writer = csv.writer(file)
-            if not file_exists:
-                # write headers
-                writer.writerow(["num_servers", "ech", "preprocessing", "wait_tickets", "wait_hellos", "mpc_hs_key", "mpc_app_key", "mpc_enc", "izk", "req_req", "local", "total"])
-            writer.writerow(row)
+        if self.benchmark_file:
+            file_exists = os.path.isfile(self.benchmark_file)
+            row = [len(self.servers), ech_time, preproc_time, ticket_time, hellos_time, hs_mpc_time, app_mpc_time, enc_time, izk_time, req_res_time, local_time, total_time]
+            with open(self.benchmark_file, mode="a", newline="") as file:
+                writer = csv.writer(file)
+                if not file_exists:
+                    # write headers
+                    writer.writerow(["num_servers", "ech", "preprocessing", "wait_tickets", "wait_hellos", "mpc_hs_key", "mpc_app_key", "mpc_enc", "izk", "req_req", "local", "total"])
+                writer.writerow(row)
 
 
     def preprocess(self) -> None:
