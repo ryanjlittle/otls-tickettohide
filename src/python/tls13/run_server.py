@@ -10,7 +10,7 @@ from tls13.tls_server import *
 class BasicServer:
     hostname: str = 'localhost'
     port: int = 9000
-    max_connections: int = 3
+    max_connections: int|None = None
     secrets: ServerSecrets = field(init=False)
     ticketer: ServerTicketer = field(init=False, default_factory=ServerTicketer)
     count: int = field(init=False, default=0)
@@ -51,7 +51,7 @@ class BasicServer:
             ssock.bind((self.hostname, self.port))
             ssock.listen()
             logger.info(f'listening on port {self.port}')
-            while self.count < self.max_connections:
+            while self.max_connections is None or self.count < self.max_connections:
                 self.count += 1
                 msg = f'Hello, you are client #{self.count}'
                 conn, addr = ssock.accept()
@@ -74,7 +74,7 @@ def main():
 
     parser.add_argument("port", type=int, help="port to listen on")
     parser.add_argument("-hostname", nargs="?", type=str, default="localhost", help="hostname to listen on")
-    parser.add_argument("-max_connections", nargs="?", type=int, default=3, help="close after this many connections")
+    parser.add_argument("-max_connections", nargs="?", type=int, help="close after this many connections")
 
     args = parser.parse_args()
 

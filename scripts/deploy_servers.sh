@@ -44,7 +44,9 @@ for ((i=0; i<NUM_SERVERS; i++)); do
       python3 -m tls13.run_server "$PORT" -hostname "0.0.0.0" -max_connections 3 > "${LOG_DIR}/server_${PORT}.log" 2>&1 &
       echo "Started server on port $PORT (log: ${LOG_DIR}/server_${PORT}.log)"
     else
-      python3 -m tls13.run_server "$PORT" -hostname "0.0.0.0" -max_connections 3 &
+      python3 -m tls13.run_server "$PORT" -hostname "0.0.0.0" &
+
+      #      python3 -m tls13.run_server "$PORT" -hostname "0.0.0.0" -max_connections 3 &
       echo "Started server on port $PORT"
     fi
 done
