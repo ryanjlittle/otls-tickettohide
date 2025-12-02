@@ -3,6 +3,7 @@ This should probably be better integrated with the Connection code in tls_record
 """
 import socket
 from io import BufferedReader, BufferedWriter
+from time import sleep
 from typing import BinaryIO
 
 from tls13.spec import UnpackError
@@ -95,12 +96,12 @@ class AbstractConnection(ABC):
             self.sock.close()
 
     def send_msg(self, msg: ProverMsgVariant|VerifierMsgVariant) -> None:
-        if not self.connected:
+        if not self.connected or self.writer is None:
             raise AttributeError("not connected")
         self.writer.send_msg(msg)
 
     def recv_msg(self) -> ProverMsgVariant|VerifierMsgVariant:
-        if not self.connected:
+        if not self.connected or self.reader is None:
             raise AttributeError("not connected")
         return self.reader.recv_msg()
 
@@ -118,6 +119,8 @@ class ProverConnection(AbstractConnection):
     @override
     @property
     def connected(self) -> bool:
+        if self.sock is None:
+            return False
         try:
             self.sock.getpeername()
             return True
@@ -127,10 +130,19 @@ class ProverConnection(AbstractConnection):
     def connect(self) -> None:
         if self.connected:
             raise AttributeError("already connected, can't connect again")
-        try:
-            self.sock.connect((self.hostname, self.port))
-        except ConnectionError:
-            raise VerifierError(f"couldn't connect to prover on {self.hostname}:{self.port}. Is the prover running?")
+        if self.sock is None:
+            raise AttributeError("socket not created")
+        logger.info(f'connecting to prover on {self.hostname}:{self.port}')
+
+        # Repeatedly try to connect to prover until it succeeds
+        while True:
+            try:
+                print(f"trying to connect to {self.hostname}:{self.port}")
+                self.sock.connect((self.hostname, self.port))
+                break
+            except ConnectionError:
+                sleep(1)
+                self.create_socket()
 
         logger.info(f'connected to prover')
 
@@ -147,7 +159,7 @@ class VerifierConnection(AbstractConnection):
     @override
     def close(self) -> None:
         super().close()
-        if self.connected:
+        if self.connected and self.conn is not None:
             self.conn.close()
 
     @override
@@ -156,6 +168,8 @@ class VerifierConnection(AbstractConnection):
         return self.conn is not None
 
     def listen(self) -> None:
+        if self.sock is None:
+            raise AttributeError("socket not created")
         self.sock.bind((self.hostname, self.port))
         logger.info(f'prover bound to {self.hostname}:{self.port}')
         self.listening = True
