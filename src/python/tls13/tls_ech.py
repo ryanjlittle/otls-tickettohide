@@ -267,7 +267,7 @@ def try_get_inner(outer: ClientHelloHandshake, secrets: Iterable[EchSecrets]) ->
             ct = builder.ech.data.payload,
         )
     except OpenError:
-        logger.error(f"Trial decryption failed; ECH rejected")
+        logger.info(f"Trial decryption failed; ECH rejected")
         return None
 
     return decode_inner(encoded=ptext, outer=outer)

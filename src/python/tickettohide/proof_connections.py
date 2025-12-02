@@ -137,7 +137,6 @@ class ProverConnection(AbstractConnection):
         # Repeatedly try to connect to prover until it succeeds
         while True:
             try:
-                print(f"trying to connect to {self.hostname}:{self.port}")
                 self.sock.connect((self.hostname, self.port))
                 break
             except ConnectionError:
