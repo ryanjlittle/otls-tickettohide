@@ -91,7 +91,7 @@ class Verifier:
 
     def preprocess(self) -> None:
         assert self.state == VerifierState.INIT
-        self.mpc_manager.begin()
+        # self.mpc_manager.begin()
         self.increment_state()
 
     def get_tickets(self) -> None:
@@ -103,6 +103,7 @@ class Verifier:
     def connect(self) -> None:
         assert self.state == VerifierState.CONNECT
         self.prover_conn.connect()
+        self.mpc_manager.begin()
 
         hostnames = [serv.hostname for serv in self.servers]
         tickets = self.crypto_manager.redacted_tickets

@@ -1,4 +1,7 @@
+import os
 from enum import IntEnum
+from time import perf_counter
+import csv
 
 from tls13.tls13_spec import ContentType, RecordHeader
 from tls13.tls_common import *
@@ -12,6 +15,7 @@ from tickettohide.proof_connections import VerifierConnection
 from tickettohide.proof_spec import TicketsVerifierMsg, KexSharesProverMsg
 from tickettohide.prover_crypto import ProverSecrets, ProverCryptoManager
 
+OUTPUT_CSV = "../../benchmarks/times.csv"
 
 class ProverState(IntEnum):
     INIT              = 0
@@ -46,6 +50,7 @@ class Prover:
     rseed: int|None = None
     verifier_client_key_share: bytes # TODO: this is for testing only
     verifier_server_key_share: bytes # TODO: this is for testing only
+    perf_times: dict[str, float]
 
     def __init__(self,
                  servers: list[ServerID],
@@ -58,6 +63,7 @@ class Prover:
         self.servers = servers
         self.secrets = secrets
         self.rseed = rseed
+        self.perf_times = dict()
         self.verifier_connection = VerifierConnection(hostname, port)
         self.crypto_manager = ProverCryptoManager(servers, secrets, rseed)
         self.mpc_manager = ProverMPC(len(servers), mpc_port)
@@ -97,26 +103,80 @@ class Prover:
 
     def run(self) -> None:
         assert self.state == ProverState.INIT
+
+        self.perf_times["START"] = perf_counter()
+        self.verifier_connection.listen()
+        self.perf_times["CONNECTED"] = perf_counter()
+
         while self.state < ProverState.DONE:
             self.handler[self.state]()
+
+        self.perf_times["DONE"] = perf_counter()
         logger.info('prover finished')
+
+        total_time = self.perf_times["DONE"] - self.perf_times["CONNECTED"]
+        preproc_time = self.perf_times["MPC_PREPROC_END"] - self.perf_times["MPC_PREPROC_START"]
+        hs_mpc_time = self.perf_times["MPC_HS_KEY_END"] - self.perf_times["MPC_HS_KEY_START"]
+        app_mpc_time = self.perf_times["MPC_APP_KEY_END"] - self.perf_times["MPC_APP_KEY_START"]
+        enc_time = self.perf_times["MPC_ENC_END"] - self.perf_times["MPC_ENC_START"]
+        izk_time = self.perf_times["IZK_END"] - self.perf_times["IZK_START"]
+        ech_time = self.perf_times["GET_ECH_END"] - self.perf_times["GET_ECH_START"]
+        ticket_time = self.perf_times["RECVD_TICKETS"] - self.perf_times["WAIT_TICKETS"]
+        hellos_time = self.perf_times["RECV_SH_END"] - self.perf_times["SEND_CH_START"]
+        req_res_time = self.perf_times["RECV_RES_END"] - self.perf_times["SEND_REQ_START"]
+        local_time = total_time - preproc_time - hs_mpc_time - app_mpc_time - enc_time - izk_time - ech_time - ticket_time - hellos_time - req_res_time
+
+        print("Time spent in each phase")
+        print(f'  Obtaining ECH configs:     {ech_time:.8f} s')
+        print(f'  MPC Preprocessing:         {preproc_time:.8f} s')
+        print(f'  Awaiting verifier tickets: {ticket_time:.8f} s')
+        print(f'  Sending/receiving CH/SH:   {hellos_time:.8f} s')
+        print(f'  MPC HS key computation:    {hs_mpc_time:.8f} s')
+        print(f'  MPC main key computation:  {app_mpc_time:.8f} s')
+        print(f'  MPC encryption:            {enc_time:.8f} s')
+        print(f'  IZK:                       {izk_time:.8f} s')
+        print(f'  Sending/receiving req/res: {req_res_time:.8f} s')
+
+        print(f'  Local computation:         {local_time:.8f} s')
+        print(f'  -------------------------')
+        print(f'  Total time:                {total_time:.8f} s')
+
+        # Append row to CSV file
+        file_exists = os.path.isfile(OUTPUT_CSV)
+        row = [len(self.servers), ech_time, preproc_time, ticket_time, hellos_time, hs_mpc_time, app_mpc_time, enc_time, izk_time, req_res_time, local_time, total_time]
+        with open(OUTPUT_CSV, mode="a", newline="") as file:
+            writer = csv.writer(file)
+            if not file_exists:
+                # write headers
+                writer.writerow(["num_servers", "ech", "preprocessing", "wait_tickets", "wait_hellos", "mpc_hs_key", "mpc_app_key", "mpc_enc", "izk", "req_req", "local", "total"])
+            writer.writerow(row)
+
 
     def preprocess(self) -> None:
         assert self.state == ProverState.INIT
         self.mpc_manager.begin()
+        self.perf_times["MPC_PREPROC_START"] = perf_counter()
+        self.mpc_manager.wait_until_connected()
+        self.perf_times["MPC_PREPROC_END"] = perf_counter()
         self.increment_state()
 
     def get_ech_configs(self) -> None:
         assert self.state == ProverState.GET_ECH
+        self.perf_times["GET_ECH_START"] = perf_counter()
         self.crypto_manager.obtain_ech_configs()
+        self.perf_times["GET_ECH_END"] = perf_counter()
+
         logger.info('prover obtained all ECH configs')
 
         self.increment_state()
-        self.verifier_connection.listen()
+        # self.verifier_connection.listen()
 
     def process_tickets(self) -> None:
         assert self.state == ProverState.WAIT_TICKETS
+        self.perf_times["WAIT_TICKETS"] = perf_counter()
         msg = self.verifier_connection.recv_msg()
+        self.perf_times["RECVD_TICKETS"] = perf_counter()
+
         if not isinstance(msg, TicketsVerifierMsg):
             raise ProverError(f'received unexpected message type: {msg.typ}')
         if len(list(msg.data)) != len(self.servers):
@@ -127,7 +187,9 @@ class Prover:
 
     def process_sh(self) -> None:
         assert self.state == ProverState.WAIT_SH
+        self.perf_times["SEND_CH_START"] = perf_counter()
         self.crypto_manager.send_and_recv_hellos()
+        self.perf_times["RECV_SH_END"] = perf_counter()
 
         kex_shares = self.crypto_manager.server_key_shares
         msg = KexSharesProverMsg.create(kex_shares)
@@ -137,28 +199,21 @@ class Prover:
     def twopc_handshake_hkdf(self) -> None:
         assert self.state == ProverState.MPC_HS_HKDF
 
-        self.mpc_manager.wait_until_connected()
+        # self.mpc_manager.wait_until_connected()
+
         transcript_hash = self.crypto_manager.real_server_handshake_hash
+        self.perf_times["MPC_HS_KEY_START"] = perf_counter()
         chts, shts, dummy_secrets = self.mpc_manager.compute_handshake_secrets(self.secrets.index, transcript_hash)
-
-
-        # Trusted party version
-
-        # msg = self.verifier_connection.recv_msg()
-        # if not isinstance(msg, HandshakeSecretsVerifierMsg):
-        #     raise ProverError(f'received unexpected message type: {msg.typ}')
-        # trusted_party = HandshakeSecretTrustedParty()
-        # hash_val = self.crypto_manager.real_server_handshake_hash
-        # trusted_party.prover_input = (self.secrets.index, hash_val)
-        # trusted_party.verifier_input = list(msg.data.uncreate())
-        # trusted_party.compute()
-        # dummy_secrets, chts, shts = trusted_party.prover_output
+        self.perf_times["MPC_HS_KEY_END"] = perf_counter()
 
         logger.info('computed handshake keys')
 
         self.crypto_manager.set_dummy_handshake_secets(dummy_secrets)
         self.crypto_manager.set_chts_shts(chts, shts)
+
+        self.perf_times["FINISH_HS_START"] = perf_counter()
         self.crypto_manager.finish_handshakes()
+        self.perf_times["FINISH_HS_END"] = perf_counter()
         logger.info('handshake secrets verified')
 
         self.increment_state()
@@ -167,24 +222,9 @@ class Prover:
         assert self.state == ProverState.MPC_APP_HKDF
 
         transcript_hash = self.crypto_manager.real_server_application_hash
+        self.perf_times["MPC_APP_KEY_START"] = perf_counter()
         dummy_secrets = self.mpc_manager.compute_master_secrets(transcript_hash)
-        # Trusted party version
-
-        # msg = self.verifier_connection.recv_msg()
-        # if not isinstance(msg, MasterSecretsVerifierMsg):
-        #     raise ProverError(f'received unexpected message type: {msg.typ}')
-        # trusted_party = MasterSecretTrustedParty()
-        # hash_val = self.crypto_manager.real_server_application_hash
-        # trusted_party.prover_input = (self.secrets.index, hash_val)
-        # trusted_party.verifier_input = list(msg.data.uncreate())
-        # trusted_party.compute()
-        # secrets, ck_share, civ, sk_share, siv = trusted_party.prover_output
-        # self.crypto_manager.set_application_key_shares(ck_share, civ, sk_share, siv)
-        #
-        # # TODO: testing only, remove these
-        # vck_share, civ1, vsk_share, siv1, commit1, commit2 = trusted_party.verifier_output
-        # self.verifier_client_key_share = vck_share
-        # self.verifier_server_key_share = vsk_share
+        self.perf_times["MPC_APP_KEY_END"] = perf_counter()
 
         # check received master secrets against locally computed values
         computed_secrets = self.crypto_manager.dummy_master_secrets
@@ -200,7 +240,6 @@ class Prover:
     def twopc_encryption(self) -> None:
         assert self.state == ProverState.MPC_ENC
 
-        # TODO: replace with actual MPC
         query = self.secrets.queries[self.secrets.index]
         plaintext = InnerPlaintext.create(
                 payload = query,
@@ -213,18 +252,12 @@ class Prover:
             size = get_cipher_alg(self.crypto_manager.ciphersuite).ctext_size(len(plaintext))
         ).pack()
 
+        self.perf_times["MPC_ENC_START"] = perf_counter()
         ciphertext = self.mpc_manager.compute_encryption(plaintext, header)
-
-        # Trused party version
-
-        # trusted_party = EncryptionTrustedParty()
-        # trusted_party.prover_input = (self.crypto_manager.client_key_share, plaintext)
-        # trusted_party.verifier_input = self.verifier_client_key_share
-        # trusted_party.public_input = (self.crypto_manager.client_key_iv, header)
-        # trusted_party.compute()
-        # ciphertext = trusted_party.prover_output
+        self.perf_times["MPC_ENC_END"] = perf_counter()
 
         raw = header + ciphertext
+        self.perf_times["SEND_REQ_START"] = perf_counter()
         self.crypto_manager.send_queries(raw)
         logger.info('sent queries to all servers')
         self.increment_state()
@@ -232,32 +265,22 @@ class Prover:
     def process_response(self) -> None:
         assert self.state == ProverState.WAIT_RESPONSE
         self.crypto_manager.recv_responses()
+        self.perf_times["RECV_RES_END"] = perf_counter()
         logger.info('received responses from all servers')
 
-        # query_commitment = self.crypto_manager.query_commitment
-        # response_commitments = self.crypto_manager.response_commitments
-        #
-        # msg = CommitmentsProverMsg.create(query_commitment, response_commitments)
-        # self.verifier_connection.send_msg(msg)
         self.increment_state()
 
     def reveal_and_prove(self) -> None:
         assert self.state == ProverState.REVEAL_AND_PROVE
+        self.perf_times["IZK_START"] = perf_counter()
         self.mpc_manager.reveal_and_prove()
         client_key, client_iv, server_key, server_iv = self.mpc_manager.get_keys()
+        self.perf_times["IZK_END"] = perf_counter()
         self.crypto_manager.set_application_keys(client_key, client_iv, server_key, server_iv)
         self.increment_state()
 
     def decrypt_all(self) -> None:
         assert self.state == ProverState.DECRYPT_ALL
-        # msg = self.verifier_connection.recv_msg()
-        # if not isinstance(msg, AppKeySharesVerifierMsg):
-        #     raise ProverError(f'received unexpected message type: {msg.typ}')
-
-        #verifier_client_key_share = msg.data.client_key_share
-        #verifier_server_key_share = msg.data.server_key_share
-        # TODO: replace the shares with the real shares from the verifier's message (commented out above)
-        # self.crypto_manager.reconstruct_application_keys(self.verifier_client_key_share, self.verifier_server_key_share)
 
         self.crypto_manager.decrypt_real_server_responses()
         logger.info('decryption of real server succeeded')

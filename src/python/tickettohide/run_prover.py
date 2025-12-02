@@ -38,7 +38,6 @@ def main():
         start = time.perf_counter()
         prover.run()
         stop = time.perf_counter()
-        print(f'Elapsed time: {stop - start:.6f}')
 
 if __name__ == '__main__':
     main()
