@@ -116,7 +116,7 @@ class ProofTest:
 
 
     def start_verifier(self):
-        with Verifier(self.server_ids, rseed=self.rseed) as verifier:
+        with Verifier(self.server_ids, prover_host="127.0.0.1", rseed=self.rseed) as verifier:
             verifier.run()
 
 def experiment_ech_test():
@@ -215,7 +215,11 @@ if __name__ == '__main__':
     num_servers = 2
     rseed = 0
 
-    test = ProofTest(num_servers, rseed=rseed)
-    test.run_on_real_server()
+    try:
+        test = ProofTest(num_servers, rseed=rseed)
+        test.run_on_real_server()
+    except Exception as err:
+        print(err)
+        exit(1)
     print("PASSED prover and verifier test")
 
