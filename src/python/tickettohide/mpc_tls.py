@@ -6,16 +6,22 @@ from config import MPC_EXECUTABLE_PATH
 class TlsMpc(ABC):
     process: subprocess.Popen
     num_servers: int
+    hostname: str|None
     port: int
     party: int
 
-    def __init__(self, num_servers: int, port: int=8001):
+    def __init__(self, num_servers: int, port: int=8001, hostname: str|None=None):
         self.num_servers = num_servers
+        self.hostname = hostname
         self.port = port
 
     def begin(self) -> None:
+        if self.hostname is not None:
+            args = [MPC_EXECUTABLE_PATH, str(self.party), str(self.num_servers), str(self.port), self.hostname]
+        else:
+            args = [MPC_EXECUTABLE_PATH, str(self.party), str(self.num_servers), str(self.port)]
         self.process = subprocess.Popen(
-            [MPC_EXECUTABLE_PATH, str(self.party), str(self.num_servers), str(self.port)],
+            args,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             text=True,
