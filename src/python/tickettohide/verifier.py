@@ -54,7 +54,7 @@ class Verifier:
         self.servers = servers
         self.prover_conn = ProverConnection(prover_host, prover_port)
         self.crypto_manager = VerifierCryptoManager(servers, options, rseed)
-        self.mpc_manager = VerifierMPC(len(servers), mpc_port)
+        self.mpc_manager = VerifierMPC(len(servers), mpc_port, prover_host)
         self.options = options
         self.state = VerifierState.INIT
 
