@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from functools import cached_property
 import enum
 
+from pyhpke import OpenError
+
 from tls13.spec import LimitReader, UnpackError
 from tls13.tls_common import *
 from tls13.tls13_spec import (
@@ -251,7 +253,6 @@ def try_get_inner(outer: ClientHelloHandshake, secrets: Iterable[EchSecrets]) ->
         csuite = builder.ech.data.cipher_suite,
     )
 
-    #TODO error check for bad key
     enc_context = hpke_alg.setup_base_r(
         enc = builder.ech.data.enc,
         privkey_r = esec.private_key,
@@ -260,11 +261,14 @@ def try_get_inner(outer: ClientHelloHandshake, secrets: Iterable[EchSecrets]) ->
 
     aad = ClientHelloHandshakeData.pack(builder.fill(payload=None).data)
 
-    #TODO error check for bad key
-    ptext = enc_context.open(
-        aad = aad,
-        ct = builder.ech.data.payload,
-    )
+    try:
+        ptext = enc_context.open(
+            aad = aad,
+            ct = builder.ech.data.payload,
+        )
+    except OpenError:
+        logger.error(f"Trial decryption failed; ECH rejected")
+        return None
 
     return decode_inner(encoded=ptext, outer=outer)
 
