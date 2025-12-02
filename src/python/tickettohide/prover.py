@@ -168,6 +168,7 @@ class Prover:
 
         transcript_hash = self.crypto_manager.real_server_application_hash
         dummy_secrets = self.mpc_manager.compute_master_secrets(transcript_hash)
+
         # Trusted party version
 
         # msg = self.verifier_connection.recv_msg()
@@ -180,11 +181,6 @@ class Prover:
         # trusted_party.compute()
         # secrets, ck_share, civ, sk_share, siv = trusted_party.prover_output
         # self.crypto_manager.set_application_key_shares(ck_share, civ, sk_share, siv)
-        #
-        # # TODO: testing only, remove these
-        # vck_share, civ1, vsk_share, siv1, commit1, commit2 = trusted_party.verifier_output
-        # self.verifier_client_key_share = vck_share
-        # self.verifier_server_key_share = vsk_share
 
         # check received master secrets against locally computed values
         computed_secrets = self.crypto_manager.dummy_master_secrets
@@ -200,7 +196,6 @@ class Prover:
     def twopc_encryption(self) -> None:
         assert self.state == ProverState.MPC_ENC
 
-        # TODO: replace with actual MPC
         query = self.secrets.queries[self.secrets.index]
         plaintext = InnerPlaintext.create(
                 payload = query,
@@ -234,11 +229,6 @@ class Prover:
         self.crypto_manager.recv_responses()
         logger.info('received responses from all servers')
 
-        # query_commitment = self.crypto_manager.query_commitment
-        # response_commitments = self.crypto_manager.response_commitments
-        #
-        # msg = CommitmentsProverMsg.create(query_commitment, response_commitments)
-        # self.verifier_connection.send_msg(msg)
         self.increment_state()
 
     def reveal_and_prove(self) -> None:
@@ -250,15 +240,6 @@ class Prover:
 
     def decrypt_all(self) -> None:
         assert self.state == ProverState.DECRYPT_ALL
-        # msg = self.verifier_connection.recv_msg()
-        # if not isinstance(msg, AppKeySharesVerifierMsg):
-        #     raise ProverError(f'received unexpected message type: {msg.typ}')
-
-        #verifier_client_key_share = msg.data.client_key_share
-        #verifier_server_key_share = msg.data.server_key_share
-        # TODO: replace the shares with the real shares from the verifier's message (commented out above)
-        # self.crypto_manager.reconstruct_application_keys(self.verifier_client_key_share, self.verifier_server_key_share)
-
         self.crypto_manager.decrypt_real_server_responses()
         logger.info('decryption of real server succeeded')
         for client in self.crypto_manager.clients:
