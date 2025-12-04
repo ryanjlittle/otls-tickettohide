@@ -8,6 +8,7 @@ from typing import Iterable, override
 
 from cryptography.hazmat.primitives.hashes import SHA256, Hash
 
+from tls13.https_client import http_get_req
 from tls13.spec import force_write, UnpackError, LimitReader
 from tls13.tls13_spec import Version, \
     CipherSuite, ClientOptions, NamedGroup, ClientHelloHandshake, KeyShareClientExtension, \
@@ -744,3 +745,18 @@ def compute_binder_val(chello: ClientHelloHandshake, binder_key: bytes, csuite: 
         raise TlsError("binder key in client hello has the wrong length")
 
     return binder_val
+
+# For benchmarking
+def plain_tls_connect(server: ServerID) -> None:
+    options = DEFAULT_PROVER_CLIENT_OPTIONS.replace(send_psk=False, send_ech=False)
+    with connect_client(server.hostname, server.port, options=options) as client:
+        req = http_get_req(server.hostname, '/')
+        client.send(req)
+        client.recv(2 ** 16)
+        client.close_notify()
+
+# For benchmarking
+def run_tls_connections(servers: list[ServerID]) -> None:
+    with ThreadPoolExecutor(max_workers=len(servers)) as executor:
+        futures = [executor.submit(plain_tls_connect,server) for server in servers]
+    [f.result() for f in futures]
