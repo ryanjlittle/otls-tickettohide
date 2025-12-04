@@ -242,6 +242,7 @@ class ProverMsgType(spec._NamedConstBase[ProverMsgTypes]):
 class VerifierMsgTypes(enum.IntEnum):
     TICKETS = 1
     APP_KEY_SHARES = 2
+    OK = 97
     HANDSHAKE_SECRETS = 98
     MASTER_SECRETS = 99
 
@@ -256,6 +257,7 @@ class VerifierMsgType(spec._NamedConstBase[VerifierMsgTypes]):
     _BYTE_LENGTH = Uint8._BYTE_LENGTH
     TICKETS: 'VerifierMsgType'
     APP_KEY_SHARES: 'VerifierMsgType'
+    OK: 'VerifierMsgType'
     HANDSHAKE_SECRETS: 'VerifierMsgType'
     MASTER_SECRETS: 'VerifierMsgType'
 
@@ -636,6 +638,79 @@ class AppKeySharesVerifierMsg(spec._SpecificSelectee[VerifierMsgTypes, B16AppKey
         orig_server_key_share, orig_client_key_share = self.uncreate()
         return self.create((orig_server_key_share if server_key_share is None else server_key_share), (orig_client_key_share if client_key_share is None else client_key_share))
 
+class BoundedUint8(tls13.tls13_spec.Uint8, Spec):
+    _LENGTH_TYPES: tuple[type[spec._Integral],...]
+
+    @override
+    def packed_size(self) -> int:
+        return sum(LT._BYTE_LENGTH for LT in self._LENGTH_TYPES) + super().packed_size()
+
+    @override
+    def pack(self) -> bytes:
+        raw = super().pack()
+        length = len(raw)
+        parts = [raw]
+        for LT in reversed(self._LENGTH_TYPES):
+            parts.append(LT(length).pack())
+            length += LT._BYTE_LENGTH
+        parts.reverse()
+        return b''.join(parts)
+
+    @override
+    def pack_to(self, dest: BinaryIO) -> int:
+        return Spec.pack_to(self, dest)
+
+    @override
+    @classmethod
+    def unpack(cls, raw: bytes) -> Self:
+        offset = 0
+        for LT in cls._LENGTH_TYPES:
+            lenlen = LT._BYTE_LENGTH
+            if len(raw) < offset + lenlen:
+                raise ValueError
+            length = LT.unpack(raw[offset:offset+lenlen])
+            if len(raw) != offset + lenlen + length:
+                raise ValueError
+            offset += lenlen
+        try:
+            return super().unpack(raw[offset:])
+        except UnpackError as e:
+            raise e.above(raw, {'bounded_size': length, 'data': e.partial}) from e
+
+    @override
+    @classmethod
+    def unpack_from(cls, src: LimitReader) -> Self:
+        lit = iter(cls._LENGTH_TYPES)
+        length = next(lit).unpack_from(src)
+        for LT in lit:
+            len2 = LT.unpack_from(src)
+            if length != LT._BYTE_LENGTH + len2:
+                raise UnpackError(src.got, f"bounded length should have been {length - LT._BYTE_LENGTH} but got {len2}")
+            length = len2
+        supraw = src.read(length)
+        try:
+            return super().unpack(supraw)
+        except UnpackError as e:
+            raise e.above(src.got, {'bounded_size': length, 'data': e.partial}) from e
+
+class B16Uint8(BoundedUint8):
+    _LENGTH_TYPES = (Uint16, )
+
+class OkVerifierMsg(spec._SpecificSelectee[VerifierMsgTypes, B16Uint8]):
+    _SELECT_TYPE = VerifierMsgType
+    _DATA_TYPE = B16Uint8
+    _SELECTOR = VerifierMsgTypes.OK
+
+    @classmethod
+    def create(cls, value:int) -> Self:
+        return cls(data=B16Uint8.create(value))
+
+    def uncreate(self) -> int:
+        return self.data.uncreate()
+
+    def parent(self) -> 'VerifierMsg':
+        return VerifierMsg(self)
+
 @dataclass(frozen=True)
 class MasterSecretsVerifierMsgData(spec._StructBase):
     _member_names: ClassVar[tuple[str,...]] = ('secret',)
@@ -752,12 +827,12 @@ class MasterSecretsVerifierMsg(spec._SpecificSelectee[VerifierMsgTypes, B16SeqMa
         return VerifierMsg(self)
 
 
-VerifierMsgVariant = TicketsVerifierMsg | AppKeySharesVerifierMsg | HandshakeSecretsVerifierMsg | MasterSecretsVerifierMsg
+VerifierMsgVariant = TicketsVerifierMsg | AppKeySharesVerifierMsg | OkVerifierMsg | HandshakeSecretsVerifierMsg | MasterSecretsVerifierMsg
 
 class VerifierMsg(spec._Select[VerifierMsgTypes]):
     _SELECT_TYPE = VerifierMsgType
     _GENERIC_TYPE = None
-    _SELECTEES = {VerifierMsgTypes.TICKETS:TicketsVerifierMsg, VerifierMsgTypes.APP_KEY_SHARES:AppKeySharesVerifierMsg, VerifierMsgTypes.HANDSHAKE_SECRETS:HandshakeSecretsVerifierMsg, VerifierMsgTypes.MASTER_SECRETS:MasterSecretsVerifierMsg}
+    _SELECTEES = {VerifierMsgTypes.TICKETS:TicketsVerifierMsg, VerifierMsgTypes.APP_KEY_SHARES:AppKeySharesVerifierMsg, VerifierMsgTypes.OK:OkVerifierMsg, VerifierMsgTypes.HANDSHAKE_SECRETS:HandshakeSecretsVerifierMsg, VerifierMsgTypes.MASTER_SECRETS:MasterSecretsVerifierMsg}
 
     def __init__(self, value: VerifierMsgVariant) -> None:
         super().__init__(value)

@@ -205,8 +205,8 @@ void full_protocol(IO* io, IO* io_opt, COT<IO>* cot, int num_servers, int party)
     /* ========================================================================
     *  Proof of correct garbling
     *
-    *  Prover uses an interactive ZK proof to convince the verifier they garbled
-    *  all circuits correctly.
+    *  Prover uses an interactive ZK proof to convince the verifier they
+    *  computed the right circuit.
     * ======================================================================= */
 
     // wait for prover and verifier ok to continue
@@ -280,6 +280,8 @@ int main(int argc, char** argv) {
     // auto start = emp::clock_start();
     setup_protocol<NetIO>(io[0], ios, threads, party);
 
+    cout << "setup complete" << endl;
+    io[0]->flush();
 
     auto prot = (PrimusParty<NetIO>*)(ProtocolExecution::prot_exec);
     IKNP<NetIO>* cot = prot->ot;

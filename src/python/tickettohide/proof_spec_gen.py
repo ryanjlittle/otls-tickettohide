@@ -2,7 +2,7 @@ from textwrap import dedent
 
 from tls13.spec import Raw, String
 from tls13.spec_gen import GenSpec, NamedConst, Select, Sequence, Struct, Bounded, Names, FORCE_RANK, SourceGen
-from tls13.tls13_spec import TicketInfo, NamedGroup, KeyShareEntry
+from tls13.tls13_spec import TicketInfo, NamedGroup, KeyShareEntry, Uint8
 from tls13.util import kwdict
 
 specs: dict[str, GenSpec] = kwdict(
@@ -20,6 +20,7 @@ specs: dict[str, GenSpec] = kwdict(
     VerifierMsgType = NamedConst(8)(
         TICKETS           = 1,
         APP_KEY_SHARES    = 2,
+        OK                = 97, # for benchmarking
         HANDSHAKE_SECRETS = 98, # for testing
         MASTER_SECRETS    = 99, # for testing
     ),
@@ -38,6 +39,7 @@ specs: dict[str, GenSpec] = kwdict(
             server_key_share = Bounded(8, Raw),
             client_key_share = Bounded(8, Raw),
         ),
+        OK = Uint8,
         HANDSHAKE_SECRETS=Sequence(Struct(secret=Bounded(8, Raw))),  # for testing purposes only!
         MASTER_SECRETS = Sequence(Struct(secret=Bounded(8, Raw))), # for testing purposes only!
     ),

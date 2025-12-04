@@ -58,13 +58,13 @@ class VerifierTls:
             # or else they may not send tickets. A basic HTTP get request will get a response from HTTPS servers.
             req = http_get_req(self.server.hostname, '/')
             client.send(req)
-            # terminate gracefully
-            client.close_notify()
             # collect tickets
             client.recv(2 ** 16)
             if len(client.tickets) == 0:
                 raise VerifierError(f'no tickets obtained')
             self.ticket_info = client.tickets[0]
+            # terminate gracefully
+            client.close_notify()
 
         self.key_calc.set_psk(self.ticket_info.secret)
 

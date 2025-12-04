@@ -1,4 +1,5 @@
 from enum import IntEnum
+from time import sleep
 
 from tls13.tls13_spec import ClientOptions
 from tls13.tls_common import *
@@ -7,7 +8,7 @@ from tls13.tls_server import ServerID
 from tickettohide.mpc_tls import VerifierMPC
 from tickettohide.proof_common import VerifierError
 from tickettohide.proof_connections import ProverConnection
-from tickettohide.proof_spec import TicketsVerifierMsg, KexSharesProverMsg
+from tickettohide.proof_spec import TicketsVerifierMsg, KexSharesProverMsg, OkVerifierMsg
 from tickettohide.prover_crypto import DEFAULT_PROVER_CLIENT_OPTIONS
 from tickettohide.verifier_crypto import VerifierCryptoManager
 
@@ -103,7 +104,7 @@ class Verifier:
     def connect(self) -> None:
         assert self.state == VerifierState.CONNECT
         self.prover_conn.connect()
-        self.mpc_manager.begin()
+        # self.mpc_manager.begin()
 
         hostnames = [serv.hostname for serv in self.servers]
         tickets = self.crypto_manager.redacted_tickets
@@ -124,11 +125,17 @@ class Verifier:
 
         shares = [[share.uncreate() for share in shares] for shares in msg.data]
         self.crypto_manager.key_exchange(shares)
+
+        # Send OK message back to prover. This is for timestamping for benchmarking
+        msg = OkVerifierMsg.create(0)
+        self.prover_conn.send_msg(msg)
         self.increment_state()
 
     def twopc_handshake_hkdf(self) -> None:
         assert self.state == VerifierState.MPC_HS_HKDF
 
+        self.mpc_manager.begin()
+        logger.info('waiting to connect to prover MPC')
         self.mpc_manager.wait_until_connected()
         self.mpc_manager.compute_handshake_secrets(self.crypto_manager.handshake_secrets)
 

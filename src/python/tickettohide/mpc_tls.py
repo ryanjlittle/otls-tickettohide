@@ -52,7 +52,8 @@ class TlsMpc(ABC):
         # a successful connection will print "connected" twice
         msg1 = self.read_bytes_output()
         msg2 = self.read_bytes_output()
-        if msg1 != "connected" or msg2 != "connected":
+        msg3 = self.read_bytes_output()
+        if msg1 != "connected" or msg2 != "connected" or msg3 != "setup complete":
             raise RuntimeError("Connection failed")
 
     def reveal_and_prove(self) -> None:

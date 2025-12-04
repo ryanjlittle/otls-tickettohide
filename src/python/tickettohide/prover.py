@@ -1,6 +1,6 @@
 import os
 from enum import IntEnum
-from time import perf_counter
+from time import perf_counter, time, sleep
 import csv
 
 from tls13.tls13_spec import ContentType, RecordHeader
@@ -12,7 +12,7 @@ from tls13.tls_server import ServerID
 from tickettohide.mpc_tls import ProverMPC
 from tickettohide.proof_common import *
 from tickettohide.proof_connections import VerifierConnection
-from tickettohide.proof_spec import TicketsVerifierMsg, KexSharesProverMsg
+from tickettohide.proof_spec import TicketsVerifierMsg, KexSharesProverMsg, OkVerifierMsg
 from tickettohide.prover_crypto import ProverSecrets, ProverCryptoManager, run_tls_connections
 
 class ProverState(IntEnum):
@@ -163,10 +163,7 @@ class Prover:
 
     def preprocess(self) -> None:
         assert self.state == ProverState.INIT
-        self.mpc_manager.begin()
-        self.perf_times["MPC_PREPROC_START"] = perf_counter()
-        self.mpc_manager.wait_until_connected()
-        self.perf_times["MPC_PREPROC_END"] = perf_counter()
+
         self.increment_state()
 
     def get_ech_configs(self) -> None:
@@ -208,7 +205,17 @@ class Prover:
     def twopc_handshake_hkdf(self) -> None:
         assert self.state == ProverState.MPC_HS_HKDF
 
+        # Wait for verifier OK message. This is for timestamping for benchmarking
+        msg = self.verifier_connection.recv_msg()
+        if not isinstance(msg, OkVerifierMsg):
+            raise ProverError(f'received unexpected message type: {msg.typ}')
+
         # self.mpc_manager.wait_until_connected()
+        self.mpc_manager.begin()
+        self.perf_times["MPC_PREPROC_START"] = perf_counter()
+        logger.info("Waiting on verifier MPC to connect")
+        self.mpc_manager.wait_until_connected()
+        self.perf_times["MPC_PREPROC_END"] = perf_counter()
 
         transcript_hash = self.crypto_manager.real_server_handshake_hash
         self.perf_times["MPC_HS_KEY_START"] = perf_counter()
@@ -285,6 +292,7 @@ class Prover:
         self.mpc_manager.reveal_and_prove()
         client_key, client_iv, server_key, server_iv = self.mpc_manager.get_keys()
         self.perf_times["IZK_END"] = perf_counter()
+        self.mpc_manager.finish()
         self.crypto_manager.set_application_keys(client_key, client_iv, server_key, server_iv)
         self.increment_state()
 

@@ -8,7 +8,7 @@ RED="\033[0;31m"
 RESET="\033[0m"
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BENCHMARK_FILE="${PROJECT_ROOT}/benchmarks/times.csv"
+BENCHMARK_FILE="${PROJECT_ROOT}/benchmarks/results_$(date +%s).csv"
 
 if [ -z "${BENCHMARK_SERVER_IP}" ]; then
     echo -e "${RED}Environment variable 'BENCHMARK_SERVER_IP' is not set. Run:\n    export BENCHMARK_SERVER_IP=<IP>${RESET}"
@@ -48,4 +48,4 @@ for i in "${values[@]}"; do
     rm "${server_file}" "${secrets_file}"
 done
 
-echo -e "${GREEN}Benchmarking complete. Results stored in ${BENCHMARK_FILE} ${RESET}"
+echo -e "${GREEN}Benchmarking complete.\n Results stored in ${BENCHMARK_FILE} ${RESET}"
