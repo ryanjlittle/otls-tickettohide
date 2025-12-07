@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import socket
 from time import perf_counter
 
 from tls13.tls_records import CloseNotifyException
@@ -19,38 +20,39 @@ class BasicServer:
     def __post_init__(self) -> None:
         self.secrets = gen_server_secrets(self.hostname)
 
-    def _handle_client(self, conn: socket, addr: Any, msg: str):
+    def _handle_client(self, conn: socket.socket, msg: str):
         svr = Server(self.secrets, self.ticketer)
         start = perf_counter()
         svr.connect_socket(conn)
         stop = perf_counter()
         logger.info(f'handshake completed in {stop - start} seconds')
-        try:
-            req = svr.recv(1024)
-            logger.info(f'received application traffic message: {req}')
-        except CloseNotifyException:
-            conn.close()
-            return
-        logger.info('sending response')
-        start = perf_counter()
-        response_contents = msg.encode('utf8')
-        response = '\r\n'.join([
-            'HTTP/1.0 200 OK',
-            'Content-type: text/plain',
-            f'Content-Length: {len(response_contents)}',
-            '\r\n',
-        ]).encode('utf8') + response_contents
-        svr.send(response)
+        while True:
+            try:
+                req = svr.recv(1024)
+                logger.info(f'received application traffic message: {req}')
+            except (CloseNotifyException, TlsError):
+                break
+            logger.info('sending response')
+            start = perf_counter()
+            response_contents = msg.encode('utf8')
+            response = '\r\n'.join([
+                'HTTP/1.0 200 OK',
+                'Content-type: text/plain',
+                f'Content-Length: {len(response_contents)}',
+                '\r\n',
+            ]).encode('utf8') + response_contents
+            svr.send(response)
+
+            stop = perf_counter()
+            logger.info(f'response sent in {stop - start} seconds')
         conn.close()
-        stop = perf_counter()
-        logger.info(f'response sent in {stop - start} seconds')
 
     def serve(self):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as ssock:
             ssock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             ssock.bind((self.hostname, self.port))
             ssock.listen()
-            logger.info(f'listening on port {self.port}')
+            print(f'Listening on port {self.port}')
             while self.max_connections is None or self.count < self.max_connections:
                 self.count += 1
                 msg = f'Hello, you are client #{self.count}'
@@ -58,7 +60,7 @@ class BasicServer:
                 logger.info(f'got connection from {addr}')
                 thread = threading.Thread(
                     target=self._handle_client,
-                    args=(conn, addr, msg),
+                    args=(conn, msg),
                     daemon=True
                 )
                 self.threads.append(thread)
