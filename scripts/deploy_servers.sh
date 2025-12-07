@@ -47,12 +47,12 @@ for ((i=0; i<NUM_SERVERS; i++)); do
       python3 -m tls13.run_server "$PORT" -hostname "0.0.0.0" &
 
       #      python3 -m tls13.run_server "$PORT" -hostname "0.0.0.0" -max_connections 3 &
-      echo "Started server on port $PORT"
     fi
 done
 
-echo -e "${GREEN}All servers launched.${RESET}"
+echo -e "${GREEN}Servers launched...${RESET}"
 
+trap "echo -e '${RED}Stopping...${RESET}'; kill 0" SIGINT SIGTERM EXIT
 wait
 
 echo -e "${GREEN}All servers closed.${RESET}"
