@@ -30,7 +30,7 @@ class BasicServer:
             try:
                 req = svr.recv(1024)
                 logger.info(f'received application traffic message: {req}')
-            except (CloseNotifyException, TlsError):
+            except (CloseNotifyException, TlsError, ConnectionResetError):
                 break
             logger.info('sending response')
             start = perf_counter()
