@@ -180,6 +180,8 @@ class ProverClient:
     app_data_in: DataBuffer
     options: ClientOptions = DEFAULT_PROVER_CLIENT_OPTIONS
     ech_configs: tuple[ECHConfigVariant, ...]|None = None
+    bytes_sent_preprocessing: int = 0
+    bytes_received_preprocessing: int = 0
     rseed: int|None = None
 
     def __init__(self, server: ServerID, rseed=None) -> None:
@@ -191,6 +193,16 @@ class ProverClient:
         """Fallback way to close the socket. The expected use is to close the connection manually when it's no
         longer needed. If that doesn't happen, this closes the socket when the object is deleted."""
         self.close()
+
+    @property
+    def bytes_sent(self) -> int:
+        if self.handshake is None or self.handshake.rwriter is None:
+            raise AttributeError("handshake not set")
+        return self.handshake.bytes_sent
+
+    @property
+    def bytes_received(self) -> int:
+        return self.handshake.rreader.bytes_received
 
     def create_socket(self):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -208,6 +220,8 @@ class ProverClient:
             if len(client.ech_configs) == 0:
                 raise ProverError('no ECH configs obtained')
             self.ech_configs = client.ech_configs[:1]
+            self.bytes_received_preprocessing += client.handshake.bytes_received
+            self.bytes_sent_preprocessing += client.handshake.bytes_sent
 
         self.options = self.options.replace(ech_configs=self.ech_configs[:1])
         logger.info(f'obtained ECH public key: {self.ech_configs[0].data.key_config.public_key}')
@@ -352,6 +366,7 @@ class TwoPCClient(ProverClient):
             except (UnpackError, EOFError) as e:
                 raise TlsError("error unpacking record from server") from e
             raw: bytes = record_src.got
+            self.handshake.rreader.bytes_received += len(raw)
             logger.info(f'Fetched a size-{len(raw)} record of type {record.typ} [2PC]')
             if record.typ != ContentType.APPLICATION_DATA:
                 raise TlsError(f'expected record of type {ContentType.APPLICATION_DATA}, got {record.typ}')
@@ -383,6 +398,7 @@ class TwoPCClient(ProverClient):
         if not self.handshake.can_send or self.handshake.rwriter is None:
             raise AttributeError("can't send application data at this stage")
         force_write(self.handshake.rwriter.file, raw)
+        self.handshake.rwriter.bytes_sent += len(raw)
         logger.info(f'sent raw encrypted record of size {len(raw)}')
 
 class ProverCryptoManager:

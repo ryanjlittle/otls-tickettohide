@@ -29,7 +29,6 @@ def main():
         start = time.perf_counter()
         verifier.run()
         stop = time.perf_counter()
-        print(f'Elapsed time: {stop - start:.6f}')
 
 if __name__ == '__main__':
     main()

@@ -15,17 +15,20 @@ from tickettohide.proof_spec import ProverMsgVariant, VerifierMsgVariant, Prover
 class MsgWriter(ABC):
     recipient: str
     out_file: BinaryIO
+    bytes_sent: int = 0
 
     def __init__(self, out_file) -> None:
         self.out_file = out_file
 
     def send_msg(self, msg: ProverMsgVariant|VerifierMsgVariant) -> None :
         msg.pack_to(self.out_file)
+        self.bytes_sent += msg.packed_size()
         logger.info(f'sent {msg.typ} message to {self.recipient}: {msg.pack()}')
 
 class MsgReader(ABC):
     sender: str
     in_file: BinaryIO
+    bytes_received: int = 0
 
     def __init__(self, in_file) -> None:
         self._in_file = in_file
@@ -46,6 +49,7 @@ class ProverMsgReader(MsgReader):
     def recv_msg(self) -> ProverMsgVariant:
         try:
             msg = ProverMsg.unpack_from(self._in_file)
+            self.bytes_received += msg.packed_size()
         except (UnpackError, EOFError) as e:
             raise Exception(f'error reading or unpacking record from {self.sender}') from e
         logger.info(f'received message of type {msg.typ} from {self.sender}')
@@ -60,6 +64,7 @@ class VerifierMsgReader(MsgReader):
     def recv_msg(self) -> VerifierMsgVariant:
         try:
             msg = self.msg_type.unpack_from(self._in_file)
+            self.bytes_received += msg.packed_size()
         except (UnpackError, EOFError) as e:
             raise Exception(f'error reading or unpacking record from {self.sender}') from e
         logger.info(f'received message of type {msg.typ} from {self.sender}')
@@ -104,6 +109,18 @@ class AbstractConnection(ABC):
         if not self.connected or self.reader is None:
             raise AttributeError("not connected")
         return self.reader.recv_msg()
+
+    @property
+    def bytes_sent(self) -> int:
+        if not self.connected or self.writer is None:
+            raise AttributeError("not connected")
+        return self.writer.bytes_sent
+
+    @property
+    def bytes_received(self) -> int:
+        if not self.connected or self.writer is None:
+            raise AttributeError("not connected")
+        return self.reader.bytes_received
 
 
 class ProverConnection(AbstractConnection):

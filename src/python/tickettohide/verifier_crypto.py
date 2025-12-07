@@ -21,6 +21,8 @@ class VerifierTls:
     kex_secrets: dict[NamedGroup, bytes]
     kex_shares: list[KeyShareEntry]
     ticket_info: TicketInfo | None = None
+    bytes_sent: int = 0
+    bytes_received: int = 0
     rseed: int|None = None
 
     def __init__(
@@ -65,6 +67,8 @@ class VerifierTls:
             self.ticket_info = client.tickets[0]
             # terminate gracefully
             client.close_notify()
+            self.bytes_sent += client.handshake.bytes_sent
+            self.bytes_received += client.handshake.bytes_received
 
         self.key_calc.set_psk(self.ticket_info.secret)
 

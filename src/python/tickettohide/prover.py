@@ -12,7 +12,7 @@ from tls13.tls_server import ServerID
 from tickettohide.mpc_tls import ProverMPC
 from tickettohide.proof_common import *
 from tickettohide.proof_connections import VerifierConnection
-from tickettohide.proof_spec import TicketsVerifierMsg, KexSharesProverMsg, OkVerifierMsg
+from tickettohide.proof_spec import TicketsVerifierMsg, KexSharesProverMsg, OkVerifierMsg, MpcCommunicationVerifierMsg
 from tickettohide.prover_crypto import ProverSecrets, ProverCryptoManager, run_tls_connections
 
 class ProverState(IntEnum):
@@ -48,6 +48,7 @@ class Prover:
     state: ProverState = ProverState.INIT
     rseed: int|None = None
     perf_times: dict[str, float]
+    mpc_communication: int = 0
 
     def __init__(self,
                  servers: list[ServerID],
@@ -113,53 +114,7 @@ class Prover:
         self.perf_times["DONE"] = perf_counter()
         logger.info('prover finished')
 
-        self.verifier_connection.close()
-        [client.close() for client in self.crypto_manager.clients]
-
-        logger.info(f'timing plain TLS 1.3 connection')
-
-        self.perf_times["PLAIN_TLS_START"] = perf_counter()
-        run_tls_connections(self.servers)
-        self.perf_times["PLAIN_TLS_END"] = perf_counter()
-
-        total_time = self.perf_times["DONE"] - self.perf_times["CONNECTED"]
-        preproc_time = self.perf_times["MPC_PREPROC_END"] - self.perf_times["MPC_PREPROC_START"]
-        hs_mpc_time = self.perf_times["MPC_HS_KEY_END"] - self.perf_times["MPC_HS_KEY_START"]
-        app_mpc_time = self.perf_times["MPC_APP_KEY_END"] - self.perf_times["MPC_APP_KEY_START"]
-        enc_time = self.perf_times["MPC_ENC_END"] - self.perf_times["MPC_ENC_START"]
-        izk_time = self.perf_times["IZK_END"] - self.perf_times["IZK_START"]
-        ech_time = self.perf_times["GET_ECH_END"] - self.perf_times["GET_ECH_START"]
-        ticket_time = self.perf_times["RECVD_TICKETS"] - self.perf_times["WAIT_TICKETS"]
-        hellos_time = self.perf_times["RECV_SH_END"] - self.perf_times["SEND_CH_START"]
-        req_res_time = self.perf_times["RECV_RES_END"] - self.perf_times["SEND_REQ_START"]
-        local_time = total_time - preproc_time - hs_mpc_time - app_mpc_time - enc_time - izk_time - ech_time - ticket_time - hellos_time - req_res_time
-        plain_tls_time = self.perf_times["PLAIN_TLS_END"] - self.perf_times["PLAIN_TLS_START"]
-
-        print("Time spent in each phase")
-        print(f'  Obtaining ECH configs:     {ech_time:.8f} s')
-        print(f'  MPC Preprocessing:         {preproc_time:.8f} s')
-        print(f'  Awaiting verifier tickets: {ticket_time:.8f} s')
-        print(f'  Sending/receiving CH/SH:   {hellos_time:.8f} s')
-        print(f'  MPC HS key computation:    {hs_mpc_time:.8f} s')
-        print(f'  MPC main key computation:  {app_mpc_time:.8f} s')
-        print(f'  MPC encryption:            {enc_time:.8f} s')
-        print(f'  IZK:                       {izk_time:.8f} s')
-        print(f'  Sending/receiving req/res: {req_res_time:.8f} s')
-        print(f'  Local computation:         {local_time:.8f} s')
-        print(f'  -------------------------')
-        print(f'  Total time:                {total_time:.8f} s')
-
-        # Append row to CSV file
-        if self.benchmark_file:
-            file_exists = os.path.isfile(self.benchmark_file)
-            row = [len(self.servers), ech_time, preproc_time, ticket_time, hellos_time, hs_mpc_time, app_mpc_time, enc_time, izk_time, req_res_time, local_time, total_time, plain_tls_time]
-            with open(self.benchmark_file, mode="a", newline="") as file:
-                writer = csv.writer(file)
-                if not file_exists:
-                    # write headers
-                    writer.writerow(["num_servers", "ech", "preprocessing", "wait_tickets", "wait_hellos", "mpc_hs_key", "mpc_app_key", "mpc_enc", "izk", "req_res", "local", "total", "plain_tls"])
-                writer.writerow(row)
-
+        self.record_benchmarks()
 
     def preprocess(self) -> None:
         assert self.state == ProverState.INIT
@@ -292,6 +247,7 @@ class Prover:
         self.mpc_manager.reveal_and_prove()
         client_key, client_iv, server_key, server_iv = self.mpc_manager.get_keys()
         self.perf_times["IZK_END"] = perf_counter()
+        self.mpc_communication = self.mpc_manager.get_communication_amount()
         self.mpc_manager.finish()
         self.crypto_manager.set_application_keys(client_key, client_iv, server_key, server_iv)
         self.increment_state()
@@ -304,3 +260,79 @@ class Prover:
         for client in self.crypto_manager.clients:
             logger.info(f'record received from server {client.server.hostname}:{client.server.port} {client.handshake.rreader.transcript.records[-1].record.payload}')
         self.increment_state()
+
+    def record_benchmarks(self) -> None:
+
+        # Communication measurements
+        bytes_sent_verifier = self.verifier_connection.bytes_sent + self.mpc_communication
+        bytes_received_verifier = self.verifier_connection.bytes_received
+
+        msg = self.verifier_connection.recv_msg()
+        if not isinstance(msg, MpcCommunicationVerifierMsg):
+            raise ProverError(f'received unexpected message type: {msg.typ}')
+
+        bytes_received_verifier += msg.data
+        self.verifier_connection.close()
+
+        bytes_sent_server_preprocessing = 0
+        bytes_received_server_preprocessing = 0
+        bytes_sent_server = 0
+        bytes_received_server = 0
+        for client in self.crypto_manager.clients:
+            bytes_sent_server_preprocessing += client.bytes_sent_preprocessing
+            bytes_received_server_preprocessing += client.bytes_received_preprocessing
+            bytes_sent_server += client.bytes_sent
+            bytes_received_server += client.bytes_received
+
+        [client.close() for client in self.crypto_manager.clients]
+
+        # Recording benchmarks for sending request/response over plain TLS (no MPC)
+        logger.info(f'timing plain TLS 1.3 connection')
+
+        self.perf_times["PLAIN_TLS_START"] = perf_counter()
+        run_tls_connections(self.servers)
+        self.perf_times["PLAIN_TLS_END"] = perf_counter()
+
+        # Timing measurements
+        total_time = self.perf_times["DONE"] - self.perf_times["CONNECTED"]
+        mpc_preproc_time = self.perf_times["MPC_PREPROC_END"] - self.perf_times["MPC_PREPROC_START"]
+        hs_mpc_time = self.perf_times["MPC_HS_KEY_END"] - self.perf_times["MPC_HS_KEY_START"]
+        app_mpc_time = self.perf_times["MPC_APP_KEY_END"] - self.perf_times["MPC_APP_KEY_START"]
+        enc_time = self.perf_times["MPC_ENC_END"] - self.perf_times["MPC_ENC_START"]
+        izk_time = self.perf_times["IZK_END"] - self.perf_times["IZK_START"]
+        ech_time = self.perf_times["GET_ECH_END"] - self.perf_times["GET_ECH_START"]
+        # ticket_time = self.perf_times["RECVD_TICKETS"] - self.perf_times["WAIT_TICKETS"]
+        online_time = self.perf_times["DONE"] - self.perf_times["RECVD_TICKETS"]
+        # req_res_time = self.perf_times["RECV_RES_END"] - self.perf_times["SEND_REQ_START"]
+        other_time = online_time - hs_mpc_time - app_mpc_time - enc_time - izk_time
+
+        plain_tls_time = self.perf_times["PLAIN_TLS_END"] - self.perf_times["PLAIN_TLS_START"]
+
+        print("Time spent in each phase")
+        print(f'  Obtaining ECH configs:     {ech_time:.8f} s')
+        print(f'  MPC Preprocessing:         {mpc_preproc_time:.8f} s')
+        print(f'  MPC HS key computation:    {hs_mpc_time:.8f} s')
+        print(f'  MPC main key computation:  {app_mpc_time:.8f} s')
+        print(f'  MPC encryption:            {enc_time:.8f} s')
+        print(f'  IZK:                       {izk_time:.8f} s')
+        print(f'  Other:                     {other_time:.8f} s')
+        print(f'  -------------------------')
+        print(f'  Total time:                {total_time:.8f} s')
+
+        # Append row to CSV file
+        if self.benchmark_file:
+            file_exists = os.path.isfile(self.benchmark_file)
+            row = [len(self.servers), ech_time, online_time, mpc_preproc_time, hs_mpc_time, app_mpc_time, enc_time,
+                   izk_time, plain_tls_time, bytes_sent_verifier, bytes_received_verifier, bytes_sent_server,
+                   bytes_received_server, bytes_sent_server_preprocessing, bytes_received_server_preprocessing]
+
+            with open(self.benchmark_file, mode="a", newline="") as file:
+                writer = csv.writer(file)
+                if not file_exists:
+                    # write headers
+                    writer.writerow(["num_servers", "ech_time", "online_time", "mpc_preprocessing_time",
+                                     "mpc_hs_key_time", "mpc_app_key_time", "mpc_enc_time", "izk_time",
+                                     "plain_tls_time", "bytes_to_verifier", "bytes_from_verifier",
+                                     "bytes_to_servers", "bytes_from_servers", "bytes_to_servers_preprocessing",
+                                     "bytes_from_servers_preprocessing"])
+                writer.writerow(row)

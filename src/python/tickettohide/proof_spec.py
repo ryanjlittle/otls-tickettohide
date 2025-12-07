@@ -242,9 +242,8 @@ class ProverMsgType(spec._NamedConstBase[ProverMsgTypes]):
 class VerifierMsgTypes(enum.IntEnum):
     TICKETS = 1
     APP_KEY_SHARES = 2
-    OK = 97
-    HANDSHAKE_SECRETS = 98
-    MASTER_SECRETS = 99
+    OK = 98
+    MPC_COMMUNICATION = 99
 
     def parent(self) -> 'VerifierMsgType':
         return VerifierMsgType(value=self.value)
@@ -258,8 +257,7 @@ class VerifierMsgType(spec._NamedConstBase[VerifierMsgTypes]):
     TICKETS: 'VerifierMsgType'
     APP_KEY_SHARES: 'VerifierMsgType'
     OK: 'VerifierMsgType'
-    HANDSHAKE_SECRETS: 'VerifierMsgType'
-    MASTER_SECRETS: 'VerifierMsgType'
+    MPC_COMMUNICATION: 'VerifierMsgType'
 
     def __init__(self, value: int) -> None:
         self._subclass_init(value)
@@ -711,34 +709,7 @@ class OkVerifierMsg(spec._SpecificSelectee[VerifierMsgTypes, B16Uint8]):
     def parent(self) -> 'VerifierMsg':
         return VerifierMsg(self)
 
-@dataclass(frozen=True)
-class MasterSecretsVerifierMsgData(spec._StructBase):
-    _member_names: ClassVar[tuple[str,...]] = ('secret',)
-    _member_types: ClassVar[tuple[type[Spec],...]] = (B8Raw,)
-    secret: B8Raw
-
-    def replace(self, secret:bytes|None=None) -> Self:
-        return type(self)((self.secret if secret is None else B8Raw.create(secret)))
-
-    @classmethod
-    def create(cls,secret:bytes) -> Self:
-        return cls(secret=B8Raw.create(secret))
-
-    def uncreate(self) -> bytes:
-        return (self.secret.uncreate())
-
-class SeqMasterSecretsVerifierMsgData(spec._Sequence[MasterSecretsVerifierMsgData]):
-    _ITEM_TYPE = MasterSecretsVerifierMsgData
-
-    @classmethod
-    def create(cls, items: Iterable[bytes]) -> Self:
-        return cls(MasterSecretsVerifierMsgData.create(item) for item in items)
-
-    def uncreate(self) -> Iterable[bytes]:
-        for item in self:
-            yield item.uncreate()
-
-class BoundedSeqMasterSecretsVerifierMsgData(SeqMasterSecretsVerifierMsgData, Spec):
+class BoundedUint32(tls13.tls13_spec.Uint32, Spec):
     _LENGTH_TYPES: tuple[type[spec._Integral],...]
 
     @override
@@ -793,46 +764,31 @@ class BoundedSeqMasterSecretsVerifierMsgData(SeqMasterSecretsVerifierMsgData, Sp
         except UnpackError as e:
             raise e.above(src.got, {'bounded_size': length, 'data': e.partial}) from e
 
-class B16SeqMasterSecretsVerifierMsgData(BoundedSeqMasterSecretsVerifierMsgData):
+class B16Uint32(BoundedUint32):
     _LENGTH_TYPES = (Uint16, )
 
-class HandshakeSecretsVerifierMsg(spec._SpecificSelectee[VerifierMsgTypes, B16SeqMasterSecretsVerifierMsgData]):
+class MpcCommunicationVerifierMsg(spec._SpecificSelectee[VerifierMsgTypes, B16Uint32]):
     _SELECT_TYPE = VerifierMsgType
-    _DATA_TYPE = B16SeqMasterSecretsVerifierMsgData
-    _SELECTOR = VerifierMsgTypes.HANDSHAKE_SECRETS
+    _DATA_TYPE = B16Uint32
+    _SELECTOR = VerifierMsgTypes.MPC_COMMUNICATION
 
     @classmethod
-    def create(cls, items:Iterable[bytes]) -> Self:
-        return cls(data=B16SeqMasterSecretsVerifierMsgData.create(items))
+    def create(cls, value:int) -> Self:
+        return cls(data=B16Uint32.create(value))
 
-    def uncreate(self) -> Iterable[bytes]:
-        return self.data.uncreate()
-
-    def parent(self) -> 'VerifierMsg':
-        return VerifierMsg(self)
-
-class MasterSecretsVerifierMsg(spec._SpecificSelectee[VerifierMsgTypes, B16SeqMasterSecretsVerifierMsgData]):
-    _SELECT_TYPE = VerifierMsgType
-    _DATA_TYPE = B16SeqMasterSecretsVerifierMsgData
-    _SELECTOR = VerifierMsgTypes.MASTER_SECRETS
-
-    @classmethod
-    def create(cls, items:Iterable[bytes]) -> Self:
-        return cls(data=B16SeqMasterSecretsVerifierMsgData.create(items))
-
-    def uncreate(self) -> Iterable[bytes]:
+    def uncreate(self) -> int:
         return self.data.uncreate()
 
     def parent(self) -> 'VerifierMsg':
         return VerifierMsg(self)
 
 
-VerifierMsgVariant = TicketsVerifierMsg | AppKeySharesVerifierMsg | OkVerifierMsg | HandshakeSecretsVerifierMsg | MasterSecretsVerifierMsg
+VerifierMsgVariant = TicketsVerifierMsg | AppKeySharesVerifierMsg | OkVerifierMsg | MpcCommunicationVerifierMsg
 
 class VerifierMsg(spec._Select[VerifierMsgTypes]):
     _SELECT_TYPE = VerifierMsgType
     _GENERIC_TYPE = None
-    _SELECTEES = {VerifierMsgTypes.TICKETS:TicketsVerifierMsg, VerifierMsgTypes.APP_KEY_SHARES:AppKeySharesVerifierMsg, VerifierMsgTypes.OK:OkVerifierMsg, VerifierMsgTypes.HANDSHAKE_SECRETS:HandshakeSecretsVerifierMsg, VerifierMsgTypes.MASTER_SECRETS:MasterSecretsVerifierMsg}
+    _SELECTEES = {VerifierMsgTypes.TICKETS:TicketsVerifierMsg, VerifierMsgTypes.APP_KEY_SHARES:AppKeySharesVerifierMsg, VerifierMsgTypes.OK:OkVerifierMsg, VerifierMsgTypes.MPC_COMMUNICATION:MpcCommunicationVerifierMsg}
 
     def __init__(self, value: VerifierMsgVariant) -> None:
         super().__init__(value)

@@ -428,6 +428,18 @@ class ClientHandshake(AbstractHandshake, PayloadProcessor):
         self.rwriter = rwriter
         self.send_hello()
 
+    @property
+    def bytes_sent(self) -> int:
+        if self.rwriter is None:
+            raise AttributeError("Record writer not initialized")
+        return self.rwriter.bytes_sent
+
+    @property
+    def bytes_received(self) -> int:
+        if self.rreader is None:
+            raise AttributeError("Record reader not initialized")
+        return self.rreader.bytes_received
+
     def _send_hs_msg(self, msg: HandshakeVariant, vers:Version = DEFAULT_LEGACY_VERSION) -> None:
         logger.info(f"sending hs message {msg.typ} to server")
         raw = msg.pack()

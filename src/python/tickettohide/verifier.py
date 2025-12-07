@@ -8,7 +8,7 @@ from tls13.tls_server import ServerID
 from tickettohide.mpc_tls import VerifierMPC
 from tickettohide.proof_common import VerifierError
 from tickettohide.proof_connections import ProverConnection
-from tickettohide.proof_spec import TicketsVerifierMsg, KexSharesProverMsg, OkVerifierMsg
+from tickettohide.proof_spec import TicketsVerifierMsg, KexSharesProverMsg, OkVerifierMsg, MpcCommunicationVerifierMsg
 from tickettohide.prover_crypto import DEFAULT_PROVER_CLIENT_OPTIONS
 from tickettohide.verifier_crypto import VerifierCryptoManager
 
@@ -173,7 +173,12 @@ class Verifier:
 
     def finalize(self) -> None:
         assert self.state == VerifierState.FINALIZE
+        bytes_sent_mpc = self.mpc_manager.get_communication_amount()
         exit_code = self.mpc_manager.finish()
         if exit_code != 0:
             raise VerifierError(f'Low-level verifier failed with exit code {exit_code}')
+
+        msg = MpcCommunicationVerifierMsg.create(bytes_sent_mpc)
+        self.prover_conn.send_msg(msg)
+
         self.increment_state()

@@ -6,6 +6,7 @@
 #include "post_record_tth.h"
 #include "tth_utils.h"
 #include "protocol/com_conv.h"
+#include "test/io_utils.h"
 
 #include <iostream>
 
@@ -304,7 +305,7 @@ int main(int argc, char** argv) {
     if (cheat)
         error("cheat!\n");
 
-    // cout << "comm: " << (getComm(io, threads, io_opt) * 1.0) / 1024 << " KBytes" << endl;
+    cout << dec << getComm(io, threads, io_opt) << endl; // bytes of communication
 
     delete io_opt;
     for (int i = 0; i < threads; i++) {

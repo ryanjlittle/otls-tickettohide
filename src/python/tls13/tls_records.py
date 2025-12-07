@@ -146,6 +146,7 @@ class RecordReader:
     unwrapper: StreamCipher | None = None
     key_count: int = -1
     _hs_buffer: HandshakeBuffer|None = None
+    bytes_received: int = 0
 
     @property
     def hs_buffer(self) -> HandshakeBuffer:
@@ -170,6 +171,7 @@ class RecordReader:
         except (UnpackError, EOFError) as e:
             raise TlsError("error reading or unpacking record from server") from e
         raw: bytes = record_src.got
+        self.bytes_received += record.packed_size()
 
         logger.info(f'Fetched a size-{len(raw)} record of type {record.typ}')
 
@@ -218,6 +220,7 @@ class RecordWriter:
     transcript: RecordTranscript
     wrapper: StreamCipher|None = None
     key_count: int = -1
+    bytes_sent: int = 0
 
     @property
     def max_payload(self) -> int:
@@ -256,8 +259,10 @@ class RecordWriter:
             sent   = True,
         )
 
+        self.bytes_sent += len(raw)
         force_write(self.file, raw)
         logger.info(f'sent a size-{len(record.payload)} payload in a size-{len(raw)} record')
+        logger.info(f'total bytes sent: {self.bytes_sent}')
 
 class AbstractHandshake(ABC):
     @abstractproperty

@@ -59,6 +59,9 @@ class TlsMpc(ABC):
     def reveal_and_prove(self) -> None:
         self.write_input("ok")
 
+    def get_communication_amount(self) -> int:
+        return int(self.read_bytes_output())
+
     def finish(self) -> int:
         # returns the exit code of the process
         return self.process.wait()
