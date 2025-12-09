@@ -7,8 +7,11 @@ YELLOW="\033[0;33m"
 RED="\033[0;31m"
 RESET="\033[0m"
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-START_PORT=9000
+NUM_TRIALS="$1"
+if [[ -z "$NUM_TRIALS" ]]; then
+    echo -e "${RED}Usage: $0 <number_of_trials>${RESET}"
+    exit 1
+fi
 
 if [ -z "${BENCHMARK_SERVER_IP}" ]; then
     echo -e "${RED}Environment variable 'BENCHMARK_SERVER_IP' is not set. Run:\n    export BENCHMARK_SERVER_IP=<IP>${RESET}"
@@ -21,6 +24,9 @@ fi
 
 SERVER_IP="${BENCHMARK_SERVER_IP}"
 PROVER_IP="${BENCHMARK_PROVER_IP}"
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+START_PORT=9000
 
 cd $PROJECT_ROOT
 source venv/bin/activate
@@ -37,8 +43,11 @@ for i in "${values[@]}"; do
         done
     } > "${server_file}"
 
-    echo -e "${GREEN}Starting verifier benchmarking, ${i} servers${RESET}"
-    python3 -m tickettohide.run_verifier "${server_file}" -prover_host="${BENCHMARK_PROVER_IP}"
+    for ((j=1; j<="${NUM_TRIALS}"; j++)); do
+        echo -e "${GREEN}Running verifier benchmarks, ${i} servers. Iteration ${j}/${NUM_TRIALS}.${RESET}"
+        python3 -m tickettohide.run_verifier "${server_file}" -prover_host="${BENCHMARK_PROVER_IP}"
+    done
+
     rm "${server_file}"
 done
 

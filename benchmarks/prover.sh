@@ -7,8 +7,11 @@ YELLOW="\033[0;33m"
 RED="\033[0;31m"
 RESET="\033[0m"
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BENCHMARK_FILE="${PROJECT_ROOT}/benchmarks/results_$(date +%s).csv"
+NUM_TRIALS="$1"
+if [[ -z "$NUM_TRIALS" ]]; then
+    echo -e "${RED}Usage: $0 <number_of_trials>${RESET}"
+    exit 1
+fi
 
 if [ -z "${BENCHMARK_SERVER_IP}" ]; then
     echo -e "${RED}Environment variable 'BENCHMARK_SERVER_IP' is not set. Run:\n    export BENCHMARK_SERVER_IP=<IP>${RESET}"
@@ -17,6 +20,9 @@ fi
 
 SERVER_IP="${BENCHMARK_SERVER_IP}"
 START_PORT=9000
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BENCHMARK_FILE="${PROJECT_ROOT}/benchmarks/results_$(date +%s).csv"
 
 cd $PROJECT_ROOT
 source venv/bin/activate
@@ -40,10 +46,11 @@ for i in "${values[@]}"; do
             base64 <<< "test test test test test test test test test test test test test test test test test test test test test test test test test tes"
         done
     } > "${secrets_file}"
-
-
-    echo -e "${GREEN}Starting prover benchmarking, ${i} servers${RESET}"
-    python3 -m tickettohide.run_prover "${server_file}" "${secrets_file}" "${BENCHMARK_FILE}"
+    
+    for ((j=1; j<="${NUM_TRIALS}"; j++)); do
+        echo -e "${GREEN}Running prover benchmarks, ${i} servers. Iteration ${j}/${NUM_TRIALS}.${RESET}"
+        python3 -m tickettohide.run_prover "${server_file}" "${secrets_file}" "${BENCHMARK_FILE}"
+    done
 
     rm "${server_file}" "${secrets_file}"
 done
