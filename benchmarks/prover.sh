@@ -37,7 +37,7 @@ for i in "${values[@]}"; do
     {
         echo "0"
         for ((j=0; j<$i; j++)); do
-            base64 <<< "GET / HTTP/1.1\r\nHost: ${SERVER_IP}"
+            base64 <<< "test test test test test test test test test test test test test test test test test test test test test test test test test tes"
         done
     } > "${secrets_file}"
 

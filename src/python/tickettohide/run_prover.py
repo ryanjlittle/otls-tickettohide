@@ -36,9 +36,7 @@ def main():
     )
 
     with Prover(server_ids, prover_secrets, benchmark_file=args.benchmark_file, port=args.main_port, mpc_port=args.mpc_port, rseed=args.rseed) as prover:
-        start = time.perf_counter()
         prover.run()
-        stop = time.perf_counter()
 
 if __name__ == '__main__':
     main()

@@ -317,7 +317,7 @@ class Prover:
         print(f'  IZK:                       {izk_time:.8f} s')
         print(f'  Other:                     {other_time:.8f} s')
         print(f'  -------------------------')
-        print(f'  Total time:                {total_time:.8f} s')
+        print(f'  Online time:               {online_time:.8f} s')
 
         # Append row to CSV file
         if self.benchmark_file:

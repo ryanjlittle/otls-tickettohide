@@ -26,9 +26,7 @@ def main():
 
 
     with Verifier(server_ids, args.prover_host, args.main_port, args.mpc_port, rseed=args.rseed) as verifier:
-        start = time.perf_counter()
         verifier.run()
-        stop = time.perf_counter()
 
 if __name__ == '__main__':
     main()
